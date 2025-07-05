@@ -2343,12 +2343,6 @@ namespace Oxide.Plugins
 
             container.Add(new CuiLabel
             {
-                Text = { Text = "✅ COMPLETE INTEGRATION - NO COMMUNICATION ISSUES!", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.2 1 0.2 1" },
-                RectTransform = { AnchorMin = "0.1 0.84", AnchorMax = "0.9 0.88" }
-            }, "ServerManagerContent");
-
-            container.Add(new CuiLabel
-            {
                 Text = { Text = "ONLINE PLAYERS", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
                 RectTransform = { AnchorMin = "0.05 0.82", AnchorMax = "0.95 0.86" }
             }, "ServerManagerContent");
@@ -2368,7 +2362,7 @@ namespace Oxide.Plugins
             container.Add(new CuiLabel
             {
                 Text = { Text = "Set Reputation", FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
-                RectTransform = { AnchorMin = "0.5 0.78", AnchorMax = "0.95 0.82" }
+                RectTransform = { AnchorMin = "0.50 0.86", AnchorMax = "0.95 0.90" }
             }, "ServerManagerContent");
 
             var onlinePlayers = BasePlayer.activePlayerList.OrderBy(p => p.displayName).Take(12).ToList();
@@ -2400,41 +2394,42 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = $"0.4 {yMin}", AnchorMax = $"0.6 {yMax}" }
                 }, "ServerManagerContent");
 
-                // 5-button reputation system: 0-25-50-75-100
-                container.Add(new CuiButton
-                {
-                    Button = { Color = "0.8 0.2 0.2 1", Command = $"sm.rep.set {p.userID} 0" },
-                    RectTransform = { AnchorMin = $"0.62 {yMin}", AnchorMax = $"0.7 {yMax}" },
-                    Text = { Text = "0", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, "ServerManagerContent");
+// 5-button reputation system: 0-25-50-75-100
+container.Add(new CuiButton
+{
+    Button = { Color = "0.8 0.2 0.2 1", Command = $"sm.rep.set {p.userID} 0" },
+    RectTransform = { AnchorMin = $"0.55 {yMin}", AnchorMax = $"0.61 {yMax}" },
+    Text = { Text = "0", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+}, "ServerManagerContent");
 
-                container.Add(new CuiButton
-                {
-                    Button = { Color = "0.6 0.4 0.2 1", Command = $"sm.rep.set {p.userID} 25" },
-                    RectTransform = { AnchorMin = $"0.72 {yMin}", AnchorMax = $"0.8 {yMax}" },
-                    Text = { Text = "25", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, "ServerManagerContent");
+container.Add(new CuiButton
+{
+    Button = { Color = "0.6 0.4 0.2 1", Command = $"sm.rep.set {p.userID} 25" },
+    RectTransform = { AnchorMin = $"0.63 {yMin}", AnchorMax = $"0.69 {yMax}" },
+    Text = { Text = "25", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+}, "ServerManagerContent");
 
-                container.Add(new CuiButton
-                {
-                    Button = { Color = "0.4 0.4 0.4 1", Command = $"sm.rep.set {p.userID} 50" },
-                    RectTransform = { AnchorMin = $"0.82 {yMin}", AnchorMax = $"0.9 {yMax}" },
-                    Text = { Text = "50", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, "ServerManagerContent");
+container.Add(new CuiButton
+{
+    Button = { Color = "0.4 0.4 0.4 1", Command = $"sm.rep.set {p.userID} 50" },
+    RectTransform = { AnchorMin = $"0.71 {yMin}", AnchorMax = $"0.77 {yMax}" },
+    Text = { Text = "50", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+}, "ServerManagerContent");
 
-                container.Add(new CuiButton
-                {
-                    Button = { Color = "0.4 0.6 0.4 1", Command = $"sm.rep.set {p.userID} 75" },
-                    RectTransform = { AnchorMin = $"0.92 {yMin}", AnchorMax = $"0.97 {yMax}" },
-                    Text = { Text = "75", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, "ServerManagerContent");
+container.Add(new CuiButton
+{
+    Button = { Color = "0.4 0.6 0.4 1", Command = $"sm.rep.set {p.userID} 75" },
+    RectTransform = { AnchorMin = $"0.79 {yMin}", AnchorMax = $"0.85 {yMax}" },
+    Text = { Text = "75", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+}, "ServerManagerContent");
 
-                container.Add(new CuiButton
-                {
-                    Button = { Color = "0.2 0.8 0.2 1", Command = $"sm.rep.set {p.userID} 100" },
-                    RectTransform = { AnchorMin = $"0.98 {yMin}", AnchorMax = $"0.99 {yMax}" },
-                    Text = { Text = "100", FontSize = 7, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, "ServerManagerContent");
+container.Add(new CuiButton
+{
+    Button = { Color = "0.2 0.8 0.2 1", Command = $"sm.rep.set {p.userID} 100" },
+    RectTransform = { AnchorMin = $"0.87 {yMin}", AnchorMax = $"0.93 {yMax}" },
+    Text = { Text = "100", FontSize = 7, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+}, "ServerManagerContent");
+
             }
 
             // Mass Actions
