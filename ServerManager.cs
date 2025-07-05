@@ -1021,34 +1021,52 @@ namespace Oxide.Plugins
                             inputVector += Vector3.back;
                             hasInput = true;
                         }
-                        if (player.serverInput.IsDown(BUTTON.LEFT))
-                        {
-                            inputVector += Vector3.left;
-                            hasInput = true;
-                        }
-                        if (player.serverInput.IsDown(BUTTON.RIGHT))
-                        {
-                            inputVector += Vector3.right;
-                            hasInput = true;
-                        }
-                        
-                        if (hasInput)
-                        {
-                            Vector3 playerForward = player.eyes.HeadForward();
-                            Vector3 playerRight = player.eyes.HeadRight();
-                            
-                            playerForward.y = 0;
-                            playerRight.y = 0;
-                            playerForward.Normalize();
-                            playerRight.Normalize();
-                            
-                            Vector3 worldMovement = (playerForward * inputVector.z + playerRight * inputVector.x).normalized;
-                            
-                            float forceMultiplier = 50f;
-                            if (player.serverInput.IsDown(BUTTON.SPRINT))
-                                forceMultiplier = 80f;
-                                
-                            myRigidbody.AddForce(worldMovement * forceMultiplier, ForceMode.Acceleration);
+                if (player.serverInput.IsDown(BUTTON.LEFT))
+                {
+                    // Rotate the chair/parachute left (counter-clockwise)
+                    chair.transform.Rotate(0, -45f * Time.fixedDeltaTime, 0);
+                    hasInput = true;
+                }
+                if (player.serverInput.IsDown(BUTTON.RIGHT))
+                {
+                    // Rotate the chair/parachute right (clockwise)
+                    chair.transform.Rotate(0, 45f * Time.fixedDeltaTime, 0);
+                    hasInput = true;
+                }
+
+                if (hasInput)
+                {
+                    Vector3 playerForward = player.eyes.HeadForward();
+                    Vector3 playerRight = player.eyes.HeadRight();
+
+                    playerForward.y = 0;
+                    playerRight.y = 0;
+                    playerForward.Normalize();
+                    playerRight.Normalize();
+
+                    // Apply forward/backward movement in the direction the parachute is facing
+                    Vector3 worldMovement = Vector3.zero;
+                    if (player.serverInput.IsDown(BUTTON.FORWARD))
+                    {
+                        worldMovement += chair.transform.forward;
+                    }
+                    if (player.serverInput.IsDown(BUTTON.BACKWARD))
+                    {
+                        worldMovement -= chair.transform.forward;
+                    }
+
+                    if (worldMovement != Vector3.zero)
+                    {
+                        worldMovement = (worldMovement.normalized) * 5f; // Adjust speed as needed
+                        worldMovement.y = 0; // Keep only horizontal movement
+
+                        float forceMultiplier = 50f;
+                        if (player.serverInput.IsDown(BUTTON.SPRINT))
+                            forceMultiplier = 80f;
+
+                        myRigidbody.AddForce(worldMovement * forceMultiplier, ForceMode.Acceleration);
+                    }
+                }
                         }
                         
                         // Cut away parachute
@@ -1070,11 +1088,8 @@ namespace Oxide.Plugins
                         myRigidbody.velocity = myRigidbody.velocity.normalized * 80f;
                     }
                 }
-
-                worldItem.SendNetworkUpdateImmediate();
-                player.SendNetworkUpdateImmediate(false);
             }
-
+	}
             private void OnCollisionEnter(Collision collision)
             {
                 if (!enabled) return;
@@ -1101,7 +1116,7 @@ namespace Oxide.Plugins
                 GameObject.Destroy(this);
             }
         }
-
+}
         // Hook to handle dismounting
         private object CanDismountEntity(BasePlayer player, BaseMountable entity)
         {
