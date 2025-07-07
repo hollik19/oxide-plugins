@@ -227,7 +227,7 @@ namespace Oxide.Plugins
                 if (decayFactor != 1f)
                 {
                     timer.Once(5f, () => {
-                        int minutes = (int)(1440 / decayFactor);
+                        var minutes = (int)(1440 / decayFactor);
                         rust.RunServerCommand($"decay.upkeep_period_minutes {minutes}");
                         PrintWarning($"Applied decay factor: {decayFactor}");
                     });
@@ -345,11 +345,11 @@ namespace Oxide.Plugins
         private string GetTierColor(int rep)
         {
             if (config == null) return "#ffff00";
-            if (rep <= config.InfidelMaxRep) return config.InfidelTierColor;
-            if (rep <= config.SinnerMaxRep) return config.SinnerTierColor;
-            if (rep <= config.AverageMaxRep) return config.AverageColor;
-            if (rep <= config.DiscipleMaxRep) return config.DiscipleTierColor;
-            return config.ProphetTierColor;
+            if (rep <= 10) return "#660000";  // Dark red for infidel
+            if (rep <= 25) return "#ff6666";  // Red for sinner
+            if (rep <= 50) return "#ffff66";  // Yellow for average  
+            if (rep <= 75) return "#66ff66";  // Green for disciple
+            return "#66ccff";  // Blue for prophet (highest tier)
         }
 
         private float GetGatherMultiplier(int reputation)
@@ -778,7 +778,7 @@ namespace Oxide.Plugins
                 var marker = liveMapSingleMarker.Value;
                 selectedEventPosition = new Vector3(marker.x, 0, marker.y);
                 selectedGridCoordinate = "";
-                Save();
+                SaveData();
                 
                 player.ChatMessage($"<color=green>Event location confirmed: X={marker.x:F1}, Z={marker.y:F1}</color>");
                 CloseLiveMapView(player);
@@ -1054,7 +1054,7 @@ namespace Oxide.Plugins
                 decayFactor = Mathf.Clamp(newFactor, 0.1f, 1f);
                 int minutes = (int)(1440 / decayFactor);
                 rust.RunServerCommand($"decay.upkeep_period_minutes {minutes}");
-                Save();
+                SaveData();
                 OpenGeneralTab(player);
                 player.ChatMessage($"<color=green>Decay factor set to {decayFactor:F1}</color>");
             }
@@ -1070,7 +1070,7 @@ namespace Oxide.Plugins
             {
                 crateUnlockTime = Mathf.Clamp(minutes, 1, 15);
                 rust.RunServerCommand($"hackablelockedcrate.requiredhackseconds {crateUnlockTime * 60}");
-                Save();
+                SaveData();
                 OpenGeneralTab(player);
                 player.ChatMessage($"<color=green>Crate unlock time set to {crateUnlockTime} minutes</color>");
             }
@@ -1086,7 +1086,7 @@ namespace Oxide.Plugins
             {
                 timeOfDay = Mathf.Clamp(time, 0, 24);
                 rust.RunServerCommand($"env.time {timeOfDay}");
-                Save();
+                SaveData();
                 OpenGeneralTab(player);
                 player.ChatMessage($"<color=green>Time set to {timeOfDay}:00</color>");
             }
@@ -1099,7 +1099,7 @@ namespace Oxide.Plugins
             if (player == null || !HasPerm(player)) return;
 
             timeOfDay = -1f;
-            Save();
+            SaveData();
             OpenGeneralTab(player);
             player.ChatMessage("<color=green>Time set to automatic</color>");
         }
@@ -1360,7 +1360,7 @@ namespace Oxide.Plugins
             else
                 customKits[player.userID][itemShortname] = quantity;
 
-            Save();
+            SaveData();
             OpenKitsTab(player);
             player.ChatMessage($"<color=green>Added {quantity}x {commonItems[itemShortname]} to kit</color>");
         }
@@ -1375,7 +1375,7 @@ namespace Oxide.Plugins
             if (customKits.ContainsKey(player.userID) && customKits[player.userID].ContainsKey(itemShortname))
             {
                 customKits[player.userID].Remove(itemShortname);
-                Save();
+                SaveData();
                 player.ChatMessage($"<color=green>Removed {commonItems[itemShortname]} from kit</color>");
             }
             OpenKitsTab(player);
@@ -1391,7 +1391,7 @@ namespace Oxide.Plugins
             {
                 customKits[player.userID].Clear();
                 player.ChatMessage("<color=green>Custom kit cleared.</color>");
-                Save();
+                SaveData();
             }
             OpenKitsTab(player);
         }
@@ -1560,7 +1560,7 @@ namespace Oxide.Plugins
 
             selectedEventPosition = player.transform.position;
             selectedGridCoordinate = "";
-            Save();
+            SaveData();
             player.ChatMessage($"<color=green>Event position set to your location: {selectedEventPosition}</color>");
             OpenEventsTab(player);
         }
@@ -1574,7 +1574,7 @@ namespace Oxide.Plugins
             selectedEventPosition = Vector3.zero;
             selectedGridCoordinate = "";
             liveMapSingleMarker = null;
-            Save();
+            SaveData();
             player.ChatMessage("<color=green>Event position cleared - will now use your location</color>");
             OpenEventsTab(player);
         }
@@ -2391,7 +2391,7 @@ namespace Oxide.Plugins
                 if (config.HungerDrainMultiplier.Enabled && player.metabolism.calories != null)
                 {
                     float currentHunger = player.metabolism.calories.value;
-                    float drainAmount = (100f / 3600f) * config.HungerThirstCheckInterval.Value * (config.HungerDrainMultiplier.Value -float drainAmount = (100f / 3600f) * config.HungerThirstCheckInterval.Value * (config.HungerDrainMultiplier.Value - 1f);
+                    float drainAmount = (100f / 100f) * config.HungerThirstCheckInterval.Value * (config.HungerDrainMultiplier.Value - 1f);
                     player.metabolism.calories.value = Mathf.Max(0, currentHunger - drainAmount);
                 }
                 
@@ -2711,7 +2711,7 @@ namespace Oxide.Plugins
                 }
             }
             // NPC Kill
-            else if (entity is BaseNpc || entity is HTNPlayer)
+            else if (entity is BaseNpc || entity is NPCPlayer)
             {
                 if (config.NPCKillPenalty.Enabled)
                 {
