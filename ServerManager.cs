@@ -79,7 +79,7 @@ namespace Oxide.Plugins
 
         // Parachute System
         private Dictionary<ulong, bool> prophetAwaitingSpawn = new Dictionary<ulong, bool>();
-        static int layerMask = 1 << (int)Rust.Layer.Water | 1 << (int)Rust.Layer.World | 1 << (int)Rust.Layer.Construction | 1 << (int)Rust.Layer.Debris | 1 << (int)Rust.Layer.Default | 1 << (int)Rust.Layer.Terrain | 1 << (int)Rust.Layer.Tree | 1 << (int)Rust.Layer.Vehicle_Large | 1 << (int)Rust.Layer.Deployed;
+        static int layerMask = 1 << (int)Rust.Layer.Water | 1 << (int)Rust.Layer.World | 1 << (int)Rust.Layer.Construction | 1 << (int)Rust.Layer.Default | 1 << (int)Rust.Layer.Terrain | 1 << (int)Rust.Layer.Tree | 1 << (int)Rust.Layer.Vehicle_Large | 1 << (int)Rust.Layer.Deployed;
 
         private Color[] liveMapDotColors = new Color[]
         {
@@ -119,7 +119,7 @@ namespace Oxide.Plugins
                 {
                     timer.Once(5f, () => {
                         int minutes = (int)(1440 / decayFactor);
-                        rust.RunServerCommand($"decay.upkeep_period_minutes {minutes}");
+                        rust.RunServerCommand("decay.upkeep_period_minutes", minutes.ToString());
                         PrintWarning($"Applied decay factor: {decayFactor}");
                     });
                 }
@@ -1237,7 +1237,7 @@ namespace Oxide.Plugins
             {
                 decayFactor = Mathf.Clamp(newFactor, 0.1f, 1f);
                 int minutes = (int)(1440 / decayFactor);
-                rust.RunServerCommand($"decay.upkeep_period_minutes {minutes}");
+                rust.RunServerCommand("decay.upkeep_period_minutes", minutes.ToString());
                 SaveData();
                 OpenGeneralTab(player);
                 player.ChatMessage($"<color=green>Decay factor set to {decayFactor:F1}</color>");
@@ -2405,7 +2405,7 @@ namespace Oxide.Plugins
 
             SaveData();
             timer.Once(0.1f, () => {
-                var newArg = new ConsoleSystem.Arg(arg.cmd, arg.ArgsStr) { Player = player };
+                var newArg = new ConsoleSystem.Arg(ConsoleSystem.Option.Unrestricted, string.Join(" ", arg.Args ?? new string[0]));
                 newArg.Args = new string[] { tier };
                 CmdKitSelectTier(newArg);
             });
@@ -2435,7 +2435,7 @@ namespace Oxide.Plugins
             }
 
             timer.Once(0.1f, () => {
-                var newArg = new ConsoleSystem.Arg(arg.cmd, arg.ArgsStr) { Player = player };
+                var newArg = new ConsoleSystem.Arg(ConsoleSystem.Option.Unrestricted, string.Join(" ", arg.Args ?? new string[0]));
                 newArg.Args = new string[] { tier };
                 CmdKitSelectTier(newArg);
             });
@@ -2459,7 +2459,7 @@ namespace Oxide.Plugins
             player.ChatMessage($"<color=green>{tier} kit cleared.</color>");
 
             timer.Once(0.1f, () => {
-                var newArg = new ConsoleSystem.Arg(arg.cmd, arg.ArgsStr) { Player = player };
+                var newArg = new ConsoleSystem.Arg(ConsoleSystem.Option.Unrestricted, string.Join(" ", arg.Args ?? new string[0]));
                 newArg.Args = new string[] { tier };
                 CmdKitSelectTier(newArg);
             });
@@ -3495,3 +3495,4 @@ namespace Oxide.Plugins
                     UnityEngine.Object.Destroy(gameObj);
         }
     }
+}
