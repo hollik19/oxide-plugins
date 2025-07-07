@@ -7,11 +7,12 @@ using Oxide.Core;
 using Oxide.Core.Plugins;
 using Oxide.Game.Rust.Cui;
 using Oxide.Core.Libraries.Covalence;
+using System.Collections;
 
 namespace Oxide.Plugins
 {
-    [Info("ServerManager", "YourName", "4.0.0")]
-    [Description("Complete server management with live map, reputation, events, and environmental controls")]
+    [Info("ServerManager", "YourName", "3.0.2")]
+    [Description("Complete server management with live map, reputation, events, and environmental controls - STANDALONE")]
     public class ServerManager : RustPlugin
     {
         [PluginReference]
@@ -37,7 +38,6 @@ namespace Oxide.Plugins
         private const int LiveMapMaxPlayers = 30;
         private const float LiveMapSize = 3750f;
         private const int LiveMapGridResolution = 25;
-        private bool liveMapTeleportMode = false;
 
         // Environmental Controls
         private int crateUnlockTime = 15; // minutes
@@ -46,12 +46,40 @@ namespace Oxide.Plugins
         private float environmentWind = -1f; // -1 = auto
         private float environmentRain = -1f; // -1 = auto
 
-        // Reputation System
-        private PluginConfig config;
-        private Dictionary<ulong, int> repData;
-        private Timer refreshTimer;
-        private Timer hourlyTimer;
-        private Timer punishmentTimer;
+        // STANDALONE REPUTATION SYSTEM
+        private Dictionary<ulong, int> playerReputations = new Dictionary<ulong, int>();
+        private Dictionary<ulong, Timer> reputationHudTimers = new Dictionary<ulong, Timer>();
+        private Dictionary<ulong, Timer> safezoneTimers = new Dictionary<ulong, Timer>();
+        private Dictionary<ulong, Timer> prophetSpawnTimers = new Dictionary<ulong, Timer>();
+        
+        // Reputation Config
+        private int repNpcKillPenalty = -5;
+        private float repInfidelGatherMultiplier = 0.7f;
+        private float repSinnerGatherMultiplier = 0.85f;
+        private float repAverageGatherMultiplier = 1.0f;
+        private float repDiscipleGatherMultiplier = 1.25f;
+        private float repProphetGatherMultiplier = 1.5f;
+        
+        // Reputation Features
+        private bool repNpcPenaltyEnabled = true;
+        private bool repParachuteSpawnEnabled = true;
+        private bool repHudDisplayEnabled = true;
+        private bool repSafeZoneHostilityEnabled = true;
+        private bool repGatherBonusEnabled = true;
+
+        // Tier-specific kits
+        private Dictionary<string, Dictionary<string, int>> tierKits = new Dictionary<string, Dictionary<string, int>>()
+        {
+            ["Infidel"] = new Dictionary<string, int>(),
+            ["Sinner"] = new Dictionary<string, int>(),
+            ["Average"] = new Dictionary<string, int>(),
+            ["Disciple"] = new Dictionary<string, int>(),
+            ["Prophet"] = new Dictionary<string, int>()
+        };
+
+        // Parachute System
+        private Dictionary<ulong, bool> prophetAwaitingSpawn = new Dictionary<ulong, bool>();
+        static int layerMask = 1 << (int)Rust.Layer.Water | 1 << (int)Rust.Layer.World | 1 << (int)Rust.Layer.Construction | 1 << (int)Rust.Layer.Debris | 1 << (int)Rust.Layer.Default | 1 << (int)Rust.Layer.Terrain | 1 << (int)Rust.Layer.Tree | 1 << (int)Rust.Layer.Vehicle_Large | 1 << (int)Rust.Layer.Deployed;
 
         private Color[] liveMapDotColors = new Color[]
         {
@@ -78,146 +106,9 @@ namespace Oxide.Plugins
             ["rifle.bolt"] = "Bolt Action Rifle", ["lowgradefuel"] = "Low Grade Fuel", ["gunpowder"] = "Gun Powder", ["sulfur"] = "Sulfur"
         };
 
-        // Configuration system with toggle and value support
-        public class SystemToggle<T>
-        {
-            public bool Enabled { get; set; }
-            public T Value { get; set; }
-            
-            public SystemToggle(bool enabled, T value)
-            {
-                Enabled = enabled;
-                Value = value;
-            }
-        }
-
-        public class PluginConfig
-        {
-            // Core System Settings
-            public float MaxDistance = 30f;
-            public int MaxPlayersShown = 4;
-            public float UpdateInterval = 2.0f;
-            public int MinReputation = 0;
-            public int MaxReputation = 100;
-            public int DefaultReputation = 50;
-            
-            // Feature Toggles
-            public bool EnableSafeZoneBlocking = true;
-            public bool EnableGatherBonus = true;
-            public bool EnableHUD = true;
-            public bool EnableParachuteSpawn = true;
-            public bool EnableContinuousHungerThirstPenalty = true;
-            public bool EnableChatIntegration = true;
-            
-            // Reputation Tier Settings
-            public string InfidelTierName = "Infidel";
-            public string SinnerTierName = "Sinner";
-            public string AverageTierName = "Average";
-            public string DiscipleTierName = "Disciple";
-            public string ProphetTierName = "Prophet";
-            
-            public string InfidelTierColor = "#ff0000";
-            public string SinnerTierColor = "#ff8000";
-            public string AverageTierColor = "#ffff00";
-            public string DiscipleTierColor = "#ffffff";
-            public string ProphetTierColor = "#00ff00";
-            
-            public int InfidelMaxRep = 25;
-            public int SinnerMaxRep = 45;
-            public int AverageMaxRep = 55;
-            public int DiscipleMaxRep = 89;
-            
-            // Hourly Reputation Gains
-            public SystemToggle<int> HourlyRepGainLow = new SystemToggle<int>(true, 4);
-            public SystemToggle<int> HourlyRepGainHigh = new SystemToggle<int>(true, 2);
-            public int HourlyRepGainThreshold = 35;
-            
-            // NPC Kill Penalties
-            public SystemToggle<int> NPCKillPenalty = new SystemToggle<int>(true, -1);
-            
-            // PvP Reputation Changes
-            public SystemToggle<int> PvPKillInfidelReward = new SystemToggle<int>(true, 10);
-            public SystemToggle<int> PvPKillSinnerReward = new SystemToggle<int>(true, 5);
-            public SystemToggle<int> PvPKillAverageReward = new SystemToggle<int>(true, -2);
-            public SystemToggle<int> PvPKillDiscipleReward = new SystemToggle<int>(true, -8);
-            public SystemToggle<int> PvPKillProphetReward = new SystemToggle<int>(true, -15);
-            
-            // Safe Zone Blocking System
-            public SystemToggle<float> SafeZonePushForce = new SystemToggle<float>(true, 2.0f);
-            public SystemToggle<float> SafeZoneCheckInterval = new SystemToggle<float>(true, 5.0f);
-            public int SafeZoneBlockingMaxRep = 25;
-            
-            // Hunger/Thirst Drain System
-            public SystemToggle<float> HungerDrainMultiplier = new SystemToggle<float>(true, 2.0f);
-            public SystemToggle<float> ThirstDrainMultiplier = new SystemToggle<float>(true, 2.0f);
-            public SystemToggle<float> HungerThirstCheckInterval = new SystemToggle<float>(true, 10.0f);
-            public int HungerThirstPenaltyMaxRep = 25;
-            
-            // Gather Bonus/Penalty System
-            public SystemToggle<float> InfidelGatherMultiplier = new SystemToggle<float>(true, 0.7f);
-            public SystemToggle<float> SinnerGatherMultiplier = new SystemToggle<float>(true, 0.9f);
-            public SystemToggle<float> AverageGatherMultiplier = new SystemToggle<float>(true, 1.0f);
-            public SystemToggle<float> DiscipleGatherMultiplier = new SystemToggle<float>(true, 1.1f);
-            public SystemToggle<float> ProphetGatherMultiplier = new SystemToggle<float>(true, 1.25f);
-            
-            // Parachute Spawn System
-            public SystemToggle<float> ParachuteSpawnHeight = new SystemToggle<float>(true, 500f);
-            public SystemToggle<bool> ParachuteOnlyForProphets = new SystemToggle<bool>(true, true);
-            public SystemToggle<bool> ParachuteAutoEquip = new SystemToggle<bool>(true, true);
-            public SystemToggle<float> ParachuteSpawnRadius = new SystemToggle<float>(true, 50f);
-            public SystemToggle<bool> ParachuteForceSpawn = new SystemToggle<bool>(true, false);
-            public SystemToggle<bool> ParachuteGiveItems = new SystemToggle<bool>(true, true);
-            
-            // Configurable Parachute Starter Items
-            public Dictionary<string, int> ParachuteStarterItems = new Dictionary<string, int>
-            {
-                ["water.jug"] = 1,
-                ["apple"] = 3,
-                ["bandage"] = 2,
-                ["torch"] = 1,
-                ["stone.pickaxe"] = 1,
-                ["hatchet"] = 1
-            };
-            
-            // Message Customization
-            public string SafeZoneBlockMessage = "<color=#ff0000>🚫 SAFE ZONE BLOCKED - Your reputation is too low!</color>";
-            public string HungerThirstPenaltyMessage = "<color=#ff8000>Your low reputation makes survival harder...</color>";
-            public string ParachuteSpawnMessage = "<color=#00ff00>Aerial spawn activated! You're {0}m above map center.</color>";
-            public string ParachuteDeployMessage = "<color=#00ff00>Parachute deployed! Use WASD to control, SPACE to cut away!</color>";
-            public string ParachuteSurvivalKitMessage = "<color=#00ff00>Aerial survival kit provided!</color>";
-            
-            // Message Display Settings
-            public SystemToggle<float> SafeZoneMessageFrequency = new SystemToggle<float>(true, 0.25f);
-            public SystemToggle<float> HungerThirstMessageFrequency = new SystemToggle<float>(true, 0.1f);
-            public SystemToggle<float> GatherBonusMessageFrequency = new SystemToggle<float>(true, 0.03f);
-        }
-
-        protected override void LoadDefaultConfig()
-        {
-            config = new PluginConfig();
-            Config.WriteObject(config, true);
-        }
-
-        protected override void LoadConfig()
-        {
-            base.LoadConfig();
-            try
-            {
-                config = Config.ReadObject<PluginConfig>();
-                if (config == null) throw new Exception();
-            }
-            catch
-            {
-                LoadDefaultConfig();
-            }
-        }
-
         void Init()
         {
-            LoadConfig();
             permission.RegisterPermission(permAdmin, this);
-            permission.RegisterPermission("reputationsystemhud.admin", this);
-            repData = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<ulong, int>>("ReputationData") ?? new Dictionary<ulong, int>();
             LoadLiveMapImageCache();
         }
 
@@ -227,42 +118,23 @@ namespace Oxide.Plugins
                 if (decayFactor != 1f)
                 {
                     timer.Once(5f, () => {
-                        var minutes = (int)(1440 / decayFactor);
+                        int minutes = (int)(1440 / decayFactor);
                         rust.RunServerCommand($"decay.upkeep_period_minutes {minutes}");
                         PrintWarning($"Applied decay factor: {decayFactor}");
                     });
                 }
                 
                 ApplyEnvironmentalSettings();
-
-                // Initialize reputation timers
-                try
+                
+                // Initialize reputation HUDs for all online players
+                foreach (var player in BasePlayer.activePlayerList)
                 {
-                    if (config.UpdateInterval > 0 && config.EnableHUD)
-                        refreshTimer = timer.Every(config.UpdateInterval, () => SafeExecute(RefreshAllPlayersHUD));
-
-                    if (config.HourlyRepGainLow.Enabled || config.HourlyRepGainHigh.Enabled)
-                        hourlyTimer = timer.Every(3600f, () => SafeExecute(AwardHourlyReputation));
-
-                    if (config.EnableSafeZoneBlocking || config.EnableContinuousHungerThirstPenalty)
-                        punishmentTimer = timer.Every(config.SafeZoneCheckInterval.Value, () => SafeExecute(CheckAllPlayersForPunishments));
-
-                    foreach (var player in BasePlayer.activePlayerList.ToList())
+                    if (player?.IsConnected == true)
                     {
-                        SafeExecute(() => {
-                            if (IsValidPlayer(player))
-                            {
-                                EnsureRep(player.userID);
-                                
-                                if (config.EnableHUD)
-                                    timer.Once(3f, () => SafeExecute(() => { if (IsValidPlayer(player) && !player.IsSleeping()) CreateOrUpdateHUD(player); }));
-                            }
-                        });
+                        InitializePlayerReputation(player);
+                        if (repHudDisplayEnabled)
+                            StartReputationHud(player);
                     }
-                }
-                catch (Exception ex)
-                {
-                    PrintError($"OnServerInitialized error: {ex.Message}");
                 }
             });
         }
@@ -280,123 +152,139 @@ namespace Oxide.Plugins
             catch { return false; }
         }
 
-        // Reputation System Methods
-        private void SafeExecute(System.Action action)
-        {
-            try
-            {
-                action?.Invoke();
-            }
-            catch (Exception ex)
-            {
-                PrintError($"SafeExecute error: {ex.Message}");
-            }
-        }
+        // ===== STANDALONE REPUTATION SYSTEM =====
 
-        private bool IsValidPlayer(BasePlayer player)
+        void InitializePlayerReputation(BasePlayer player)
         {
-            return player != null && !player.IsDestroyed && player.IsConnected;
-        }
-
-        private void EnsureRep(ulong userID)
-        {
-            if (repData != null && !repData.ContainsKey(userID))
-                repData[userID] = config?.DefaultReputation ?? 50;
+            if (!playerReputations.ContainsKey(player.userID))
+            {
+                playerReputations[player.userID] = 50; // Default reputation
+                SaveData();
+            }
         }
 
         int GetPlayerReputation(BasePlayer player)
         {
-            EnsureRep(player.userID);
-            return repData[player.userID];
+            if (player == null) return 50;
+            InitializePlayerReputation(player);
+            return playerReputations[player.userID];
         }
 
         bool SetPlayerReputation(BasePlayer player, int newRep)
         {
-            try
-            {
-                EnsureRep(player.userID);
-                newRep = Mathf.Clamp(newRep, config.MinReputation, config.MaxReputation);
-                repData[player.userID] = newRep;
-                SaveReputationData();
-                
-                if (config.EnableHUD)
-                {
-                    timer.Once(0.5f, () => SafeExecute(() => CreateOrUpdateHUD(player)));
-                }
-                return true;
-            }
-            catch (Exception ex)
-            {
-                PrintWarning($"SetPlayerReputation error for {player.displayName}: {ex.Message}");
-                return false;
-            }
-        }
-
-        private string GetTierName(int rep)
-        {
-            if (config == null) return "Average";
-            if (rep <= config.InfidelMaxRep) return config.InfidelTierName;
-            if (rep <= config.SinnerMaxRep) return config.SinnerTierName;
-            if (rep <= config.AverageMaxRep) return config.AverageTierName;
-            if (rep <= config.DiscipleMaxRep) return config.DiscipleTierName;
-            return config.ProphetTierName;
-        }
-
-        private string GetTierColor(int rep)
-        {
-            if (config == null) return "#ffff00";
-            if (rep <= 10) return "#660000";  // Dark red for infidel
-            if (rep <= 25) return "#ff6666";  // Red for sinner
-            if (rep <= 50) return "#ffff66";  // Yellow for average  
-            if (rep <= 75) return "#66ff66";  // Green for disciple
-            return "#66ccff";  // Blue for prophet (highest tier)
-        }
-
-        private float GetGatherMultiplier(int reputation)
-        {
-            if (config == null) return 1.0f;
-            string tier = GetTierName(reputation);
+            if (player == null) return false;
             
-            if (tier == config.InfidelTierName && config.InfidelGatherMultiplier.Enabled) 
-                return config.InfidelGatherMultiplier.Value;
-            if (tier == config.SinnerTierName && config.SinnerGatherMultiplier.Enabled) 
-                return config.SinnerGatherMultiplier.Value;
-            if (tier == config.AverageTierName && config.AverageGatherMultiplier.Enabled) 
-                return config.AverageGatherMultiplier.Value;
-            if (tier == config.DiscipleTierName && config.DiscipleGatherMultiplier.Enabled) 
-                return config.DiscipleGatherMultiplier.Value;
-            if (tier == config.ProphetTierName && config.ProphetGatherMultiplier.Enabled) 
-                return config.ProphetGatherMultiplier.Value;
+            newRep = Mathf.Clamp(newRep, 0, 100);
+            playerReputations[player.userID] = newRep;
+            SaveData();
             
-            return 1.0f;
-        }
-
-        private bool CanUseParachute(int reputation)
-        {
-            if (config?.EnableParachuteSpawn != true) return false;
-            
-            if (config.ParachuteOnlyForProphets.Enabled && config.ParachuteOnlyForProphets.Value)
-                return GetTierName(reputation) == config.ProphetTierName;
+            if (repHudDisplayEnabled)
+                UpdateReputationHud(player);
             
             return true;
         }
 
-        private int GetPvPRepChange(string victimTier)
+        string GetReputationTier(int reputation)
         {
-            if (config == null) return 0;
+            if (reputation <= 20) return "Infidel";
+            if (reputation <= 40) return "Sinner";
+            if (reputation <= 60) return "Average";
+            if (reputation <= 80) return "Disciple";
+            return "Prophet";
+        }
+
+        Color GetTierColor(string tier)
+        {
+            switch (tier)
+            {
+                case "Infidel": return new Color(0.8f, 0.1f, 0.1f, 1f); // Red
+                case "Sinner": return new Color(0.9f, 0.4f, 0.1f, 1f); // Orange
+                case "Average": return new Color(0.8f, 0.8f, 0.8f, 1f); // Gray
+                case "Disciple": return new Color(0.2f, 0.6f, 0.9f, 1f); // Blue
+                case "Prophet": return new Color(0.2f, 0.8f, 0.2f, 1f); // Green
+                default: return Color.white;
+            }
+        }
+
+        void StartReputationHud(BasePlayer player)
+        {
+            if (player == null || !player.IsConnected) return;
             
-            if (victimTier == config.InfidelTierName && config.PvPKillInfidelReward.Enabled)
-                return config.PvPKillInfidelReward.Value;
-            if (victimTier == config.SinnerTierName && config.PvPKillSinnerReward.Enabled)
-                return config.PvPKillSinnerReward.Value;
-            if (victimTier == config.AverageTierName && config.PvPKillAverageReward.Enabled)
-                return config.PvPKillAverageReward.Value;
-            if (victimTier == config.DiscipleTierName && config.PvPKillDiscipleReward.Enabled)
-                return config.PvPKillDiscipleReward.Value;
-            if (victimTier == config.ProphetTierName && config.PvPKillProphetReward.Enabled)
-                return config.PvPKillProphetReward.Value;
+            if (reputationHudTimers.ContainsKey(player.userID))
+            {
+                reputationHudTimers[player.userID]?.Destroy();
+            }
             
-            return 0;
+            UpdateReputationHud(player);
+            
+            reputationHudTimers[player.userID] = timer.Every(5f, () => {
+                if (player?.IsConnected == true)
+                    UpdateReputationHud(player);
+                else
+                    StopReputationHud(player);
+            });
+        }
+
+        void StopReputationHud(BasePlayer player)
+        {
+            if (player == null) return;
+            
+            CuiHelper.DestroyUi(player, "ReputationHUD");
+            
+            if (reputationHudTimers.ContainsKey(player.userID))
+            {
+                reputationHudTimers[player.userID]?.Destroy();
+                reputationHudTimers.Remove(player.userID);
+            }
+        }
+
+        void UpdateReputationHud(BasePlayer player)
+        {
+            if (player == null || !player.IsConnected || !repHudDisplayEnabled) return;
+            
+            CuiHelper.DestroyUi(player, "ReputationHUD");
+            
+            int reputation = GetPlayerReputation(player);
+            string tier = GetReputationTier(reputation);
+            Color tierColor = GetTierColor(tier);
+            
+            var container = new CuiElementContainer();
+            
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.1 0.1 0.1 0.8" },
+                RectTransform = { AnchorMin = "0.85 0.85", AnchorMax = "0.99 0.95" },
+                CursorEnabled = false
+            }, "Overlay", "ReputationHUD");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { 
+                    Text = $"{tier}\n{reputation}/100", 
+                    FontSize = 12, 
+                    Align = TextAnchor.MiddleCenter, 
+                    Color = $"{tierColor.r} {tierColor.g} {tierColor.b} {tierColor.a}" 
+                },
+                RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
+            }, "ReputationHUD");
+            
+            CuiHelper.AddUi(player, container);
+        }
+
+        float GetGatherMultiplier(BasePlayer player)
+        {
+            if (!repGatherBonusEnabled) return 1.0f;
+            
+            string tier = GetReputationTier(GetPlayerReputation(player));
+            switch (tier)
+            {
+                case "Infidel": return repInfidelGatherMultiplier;
+                case "Sinner": return repSinnerGatherMultiplier;
+                case "Average": return repAverageGatherMultiplier;
+                case "Disciple": return repDiscipleGatherMultiplier;
+                case "Prophet": return repProphetGatherMultiplier;
+                default: return 1.0f;
+            }
         }
 
         void ApplyEnvironmentalSettings()
@@ -412,9 +300,367 @@ namespace Oxide.Plugins
                 rust.RunServerCommand($"hackablelockedcrate.requiredhackseconds {crateUnlockTime * 60}");
                 PrintWarning($"Crate unlock time set to: {crateUnlockTime} minutes");
             }
+        }// ===== GAME HOOKS =====
+
+        void OnPlayerConnected(BasePlayer player)
+        {
+            if (player == null) return;
+            
+            InitializePlayerReputation(player);
+            
+            // Clean up any existing UI elements
+            NextTick(() => {
+                CuiHelper.DestroyUi(player, "ServerManagerMain");
+                CuiHelper.DestroyUi(player, "ServerManagerContent");
+                CloseLiveMapView(player);
+                
+                if (repHudDisplayEnabled)
+                    StartReputationHud(player);
+            });
         }
 
-        // ===== LIVE MAP FUNCTIONALITY =====
+        void OnPlayerDisconnected(BasePlayer player, string reason)
+        {
+            if (player == null) return;
+            
+            CloseLiveMapView(player);
+            StopReputationHud(player);
+            lastRadiationTime.Remove(player.userID);
+            liveMapLastUpdate.Remove(player.userID);
+            prophetAwaitingSpawn.Remove(player.userID);
+            
+            if (safezoneTimers.ContainsKey(player.userID))
+            {
+                safezoneTimers[player.userID]?.Destroy();
+                safezoneTimers.Remove(player.userID);
+            }
+            
+            if (prophetSpawnTimers.ContainsKey(player.userID))
+            {
+                prophetSpawnTimers[player.userID]?.Destroy();
+                prophetSpawnTimers.Remove(player.userID);
+            }
+        }
+
+        void OnPlayerRespawned(BasePlayer player)
+        {
+            if (player == null) return;
+            
+            NextTick(() => {
+                // Give tier-specific kit
+                GiveTierKit(player);
+                
+                // Check if Prophet and show spawn choice
+                if (repParachuteSpawnEnabled && GetReputationTier(GetPlayerReputation(player)) == "Prophet")
+                {
+                    ShowProphetSpawnChoice(player);
+                }
+            });
+        }
+
+        void OnEntityDeath(BaseCombatEntity entity, HitInfo info)
+        {
+            if (!repNpcPenaltyEnabled) return;
+            if (entity == null || info?.InitiatorPlayer == null) return;
+            
+            // Check if killed entity is an NPC
+            if (entity is NPCPlayer || entity is BaseAnimalNPC || entity is BradleyAPC || entity is BaseHelicopter)
+            {
+                var player = info.InitiatorPlayer;
+                int currentRep = GetPlayerReputation(player);
+                int newRep = currentRep + repNpcKillPenalty;
+                SetPlayerReputation(player, newRep);
+                
+                player.ChatMessage($"<color=red>Reputation decreased by {Math.Abs(repNpcKillPenalty)} for killing NPC. Current: {newRep}</color>");
+            }
+        }
+
+        void OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
+        {
+            if (!repGatherBonusEnabled) return;
+            
+            var player = entity as BasePlayer;
+            if (player == null) return;
+            
+            float multiplier = GetGatherMultiplier(player);
+            if (multiplier != 1.0f)
+            {
+                int bonusAmount = Mathf.RoundToInt(item.amount * (multiplier - 1.0f));
+                if (bonusAmount > 0)
+                {
+                    item.amount += bonusAmount;
+                }
+                else if (bonusAmount < 0)
+                {
+                    item.amount = Mathf.Max(1, item.amount + bonusAmount);
+                }
+            }
+        }
+
+        void OnCollectiblePickup(Item item, BasePlayer player, CollectibleEntity collectible)
+        {
+            if (!repGatherBonusEnabled) return;
+            if (player == null) return;
+            
+            float multiplier = GetGatherMultiplier(player);
+            if (multiplier != 1.0f)
+            {
+                int bonusAmount = Mathf.RoundToInt(item.amount * (multiplier - 1.0f));
+                if (bonusAmount > 0)
+                {
+                    item.amount += bonusAmount;
+                }
+                else if (bonusAmount < 0)
+                {
+                    item.amount = Mathf.Max(1, item.amount + bonusAmount);
+                }
+            }
+        }
+
+        void OnPlayerTick(BasePlayer player)
+        {
+            if (player == null || !player.IsConnected) return;
+            if (!repSafeZoneHostilityEnabled) return;
+            
+            // Check if Infidel in safe zone
+            if (GetReputationTier(GetPlayerReputation(player)) == "Infidel" && IsPlayerInSafeZone(player))
+            {
+                if (!safezoneTimers.ContainsKey(player.userID))
+                {
+                    player.ChatMessage("<color=red>The safe zone repels infidels! You are taking damage!</color>");
+                    
+                    safezoneTimers[player.userID] = timer.Every(15f, () => {
+                        if (player?.IsConnected == true && IsPlayerInSafeZone(player) && 
+                            GetReputationTier(GetPlayerReputation(player)) == "Infidel")
+                        {
+                            player.Hurt(5f);
+                            player.ChatMessage("<color=red>The safe zone burns your soul...</color>");
+                        }
+                        else
+                        {
+                            if (safezoneTimers.ContainsKey(player.userID))
+                            {
+                                safezoneTimers[player.userID]?.Destroy();
+                                safezoneTimers.Remove(player.userID);
+                            }
+                        }
+                    });
+                }
+            }
+            else
+            {
+                if (safezoneTimers.ContainsKey(player.userID))
+                {
+                    safezoneTimers[player.userID]?.Destroy();
+                    safezoneTimers.Remove(player.userID);
+                }
+            }
+        }
+
+        // ===== PROPHET PARACHUTE SPAWN SYSTEM =====
+
+        void ShowProphetSpawnChoice(BasePlayer player)
+        {
+            if (player == null || !player.IsConnected) return;
+            
+            prophetAwaitingSpawn[player.userID] = true;
+            
+            var container = new CuiElementContainer();
+            
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.1 0.1 0.1 0.95" },
+                RectTransform = { AnchorMin = "0.35 0.4", AnchorMax = "0.65 0.6" },
+                CursorEnabled = true
+            }, "Overlay", "ProphetSpawnChoice");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "PROPHET SPAWN CHOICE", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "0.2 0.8 0.2 1" },
+                RectTransform = { AnchorMin = "0 0.7", AnchorMax = "1 1" }
+            }, "ProphetSpawnChoice");
+            
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.2 0.6 0.2 1", Command = "sm.prophet.groundspawn" },
+                RectTransform = { AnchorMin = "0.05 0.4", AnchorMax = "0.45 0.65" },
+                Text = { Text = "Ground Spawn", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, "ProphetSpawnChoice");
+            
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.2 0.2 0.8 1", Command = "sm.prophet.aerialspawn" },
+                RectTransform = { AnchorMin = "0.55 0.4", AnchorMax = "0.95 0.65" },
+                Text = { Text = "Aerial Spawn", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, "ProphetSpawnChoice");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "Choose your spawn method", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
+                RectTransform = { AnchorMin = "0 0.1", AnchorMax = "1 0.35" }
+            }, "ProphetSpawnChoice");
+            
+            CuiHelper.AddUi(player, container);
+            
+            // Auto-close after 15 seconds
+            if (prophetSpawnTimers.ContainsKey(player.userID))
+                prophetSpawnTimers[player.userID]?.Destroy();
+                
+            prophetSpawnTimers[player.userID] = timer.Once(15f, () => {
+                if (player?.IsConnected == true && prophetAwaitingSpawn.ContainsKey(player.userID))
+                {
+                    CuiHelper.DestroyUi(player, "ProphetSpawnChoice");
+                    prophetAwaitingSpawn.Remove(player.userID);
+                }
+            });
+        }
+
+        [ConsoleCommand("sm.prophet.groundspawn")]
+        void CmdProphetGroundSpawn(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !prophetAwaitingSpawn.ContainsKey(player.userID)) return;
+            
+            CuiHelper.DestroyUi(player, "ProphetSpawnChoice");
+            prophetAwaitingSpawn.Remove(player.userID);
+            
+            if (prophetSpawnTimers.ContainsKey(player.userID))
+            {
+                prophetSpawnTimers[player.userID]?.Destroy();
+                prophetSpawnTimers.Remove(player.userID);
+            }
+            
+            player.ChatMessage("<color=green>Ground spawn selected.</color>");
+        }
+
+        [ConsoleCommand("sm.prophet.aerialspawn")]
+        void CmdProphetAerialSpawn(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !prophetAwaitingSpawn.ContainsKey(player.userID)) return;
+            
+            CuiHelper.DestroyUi(player, "ProphetSpawnChoice");
+            prophetAwaitingSpawn.Remove(player.userID);
+            
+            if (prophetSpawnTimers.ContainsKey(player.userID))
+            {
+                prophetSpawnTimers[player.userID]?.Destroy();
+                prophetSpawnTimers.Remove(player.userID);
+            }
+            
+            // Start aerial spawn
+            ServerMgr.Instance.StartCoroutine(AerialSpawnProcessing(player));
+        }
+
+        private IEnumerator AerialSpawnProcessing(BasePlayer player)
+        {
+            if (player == null) yield break;
+            
+            Vector3 spawnPos = FindRandomAerialLocation();
+            MovePlayerToPosition(player, spawnPos, Quaternion.identity);
+            
+            yield return new WaitForEndOfFrame();
+            
+            OpenParachute(player);
+            player.ChatMessage("<color=green>Aerial spawn activated! Use WASD to control your descent.</color>");
+        }
+
+        private Vector3 FindRandomAerialLocation()
+        {
+            float mapSize = ConVar.Server.worldsize;
+            float spawnline = (mapSize / 2) - 500f;
+            float altitude = UnityEngine.Random.Range(400f, 600f);
+            
+            return new Vector3(
+                UnityEngine.Random.Range(-spawnline, spawnline),
+                altitude,
+                UnityEngine.Random.Range(-spawnline, spawnline)
+            );
+        }
+
+        private void MovePlayerToPosition(BasePlayer player, Vector3 position, Quaternion rotation)
+        {
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Wounded, false);
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Unused2, false);
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Unused1, false);
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.ReceivingSnapshot, true);
+            player.transform.position = position;
+            player.transform.rotation = rotation;
+            player.StopWounded();
+            player.StopSpectating();
+            player.UpdateNetworkGroup();
+            player.SendNetworkUpdateImmediate(false);
+            player.ClearEntityQueue(null);
+            player.SendFullSnapshot();
+        }
+
+        public void OpenParachute(BasePlayer player)
+        {
+            if (player == null) return;
+            var getParent = player.GetParentEntity();
+            if (getParent != null)
+            {
+                float fwdVel = 1f;
+                var hasRigid = getParent.GetComponentInParent<Rigidbody>();
+                if (hasRigid) fwdVel = hasRigid.velocity.magnitude;
+                AttachParachuteEntity(player, fwdVel);
+            }
+            else AttachParachuteEntity(player);
+        }
+
+        private void AttachParachuteEntity(BasePlayer player, float fwdVel = 1f)
+        {
+            Vector3 position = player.transform.position;
+            var rotation = Quaternion.Euler(new Vector3(0f, player.GetNetworkRotation().eulerAngles.y, 0f));
+
+            DroppedItem chutePack = ItemManager.CreateByItemID(476066818, 1, 0).Drop(position, Vector3.zero, rotation).GetComponent<DroppedItem>();
+            chutePack.allowPickup = false;
+            chutePack.CancelInvoke((Action)Delegate.CreateDelegate(typeof(Action), chutePack, "IdleDestroy"));
+
+            var addParachutePack = chutePack.gameObject.AddComponent<ParachuteEntity>();
+            addParachutePack.fwdForce = fwdVel;
+            addParachutePack.SetPlayer(player);
+            addParachutePack.SetInput(player.serverInput);
+        }
+
+        private object CanDismountEntity(BasePlayer player, BaseMountable entity)
+        {
+            if (player == null || entity == null) return null;
+            var isParachuting = entity.GetComponentInParent<ParachuteEntity>();
+            if (isParachuting && !isParachuting.wantsDismount) return false;
+            return null;
+        }
+
+        // ===== TIER KIT SYSTEM =====
+
+        void GiveTierKit(BasePlayer player)
+        {
+            if (player == null) return;
+            
+            string tier = GetReputationTier(GetPlayerReputation(player));
+            if (!tierKits.ContainsKey(tier)) return;
+            
+            var kit = tierKits[tier];
+            if (kit.Count == 0) return;
+            
+            foreach (var kvp in kit)
+            {
+                ItemDefinition def = ItemManager.FindItemDefinition(kvp.Key);
+                if (def == null) continue;
+                
+                var item = ItemManager.Create(def, kvp.Value);
+                if (item != null)
+                {
+                    if (!player.inventory.GiveItem(item))
+                    {
+                        item.Drop(player.transform.position, Vector3.zero);
+                    }
+                }
+            }
+            
+            if (kit.Count > 0)
+                player.ChatMessage($"<color=green>You received your {tier} tier starter kit!</color>");
+        }// ===== LIVE MAP FUNCTIONALITY =====
         
         string GetLiveMapImagePath()
         {
@@ -522,38 +768,27 @@ namespace Oxide.Plugins
 
             CreateLiveMapClickGrid(container, player);
             
+            // FIXED: Close button with proper command
             container.Add(new CuiButton
             {
-                Button = { Command = $"sm.livemap.close {player.userID}", Color = "0.8 0.2 0.2 0.9" },
+                Button = { Command = "sm.livemap.close", Color = "0.8 0.2 0.2 0.9" },
                 RectTransform = { AnchorMin = "0.94 0.96", AnchorMax = "0.99 0.99" },
                 Text = { Text = "✕", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
             }, LiveMapContainerName);
 
-            string modeText = liveMapTeleportMode ? "TELEPORT MODE - Click to teleport" : "Click to select event location";
             container.Add(new CuiLabel
             {
-                Text = { Text = $"{modeText} | Yellow = Selected, Colored = Players", 
+                Text = { Text = "Click to select event location | Yellow = Selected, Colored = Players", 
                         FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.9 0.9 0.9 1" },
-                RectTransform = { AnchorMin = "0.02 0.02", AnchorMax = "0.5 0.06" }
+                RectTransform = { AnchorMin = "0.02 0.02", AnchorMax = "0.7 0.06" }
             }, LiveMapContainerName);
 
-            // Toggle teleport mode button
             container.Add(new CuiButton
             {
-                Button = { Command = $"sm.livemap.togglemode {player.userID}", Color = liveMapTeleportMode ? "0.8 0.2 0.2 0.9" : "0.2 0.2 0.8 0.9" },
-                RectTransform = { AnchorMin = "0.52 0.02", AnchorMax = "0.64 0.06" },
-                Text = { Text = liveMapTeleportMode ? "Teleport ON" : "Teleport OFF", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                Button = { Command = $"sm.livemap.confirm {player.userID}", Color = "0.2 0.8 0.2 0.9" },
+                RectTransform = { AnchorMin = "0.75 0.02", AnchorMax = "0.92 0.06" },
+                Text = { Text = "Confirm Location", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
             }, LiveMapContainerName);
-
-            if (!liveMapTeleportMode)
-            {
-                container.Add(new CuiButton
-                {
-                    Button = { Command = $"sm.livemap.confirm {player.userID}", Color = "0.2 0.8 0.2 0.9" },
-                    RectTransform = { AnchorMin = "0.75 0.02", AnchorMax = "0.92 0.06" },
-                    Text = { Text = "Confirm Location", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, LiveMapContainerName);
-            }
 
             CuiHelper.AddUi(player, container);
         }
@@ -599,7 +834,7 @@ namespace Oxide.Plugins
             CuiElementContainer container = new CuiElementContainer();
 
             // Show selected location marker
-            if (liveMapSingleMarker.HasValue && !liveMapTeleportMode)
+            if (liveMapSingleMarker.HasValue)
             {
                 var marker = liveMapSingleMarker.Value;
                 Vector2 norm = LiveMapWorldToNormalized(new Vector3(marker.x, 0, marker.y));
@@ -690,25 +925,6 @@ namespace Oxide.Plugins
             liveMapLastUpdate.Remove(player.userID);
         }
 
-        [ConsoleCommand("sm.livemap.togglemode")]
-        void CmdLiveMapToggleMode(ConsoleSystem.Arg arg)
-        {
-            if (arg.Args == null || arg.Args.Length == 0) return;
-            if (!ulong.TryParse(arg.Args[0], out ulong id)) return;
-
-            BasePlayer player = BasePlayer.FindByID(id);
-            if (player == null || !HasPerm(player)) return;
-
-            liveMapTeleportMode = !liveMapTeleportMode;
-            
-            // Recreate the UI with updated mode
-            string mapPath = GetLiveMapImagePath();
-            CreateLiveMapUI(player, mapPath);
-            NextTick(() => UpdateLiveMapDotsAndMarkers(player));
-            
-            player.ChatMessage($"<color=green>Live map mode: {(liveMapTeleportMode ? "TELEPORT" : "EVENT SELECTION")}</color>");
-        }
-
         [ConsoleCommand("sm.livemap.click")]
         void CmdLiveMapClick(ConsoleSystem.Arg arg)
         {
@@ -720,32 +936,9 @@ namespace Oxide.Plugins
             if (player == null || !HasPerm(player)) return;
 
             Vector2 world = LiveMapNormalizedToWorld(normX, normY);
-            
-            if (liveMapTeleportMode)
-            {
-                // Teleport mode - instantly teleport the player
-                Vector3 teleportPos = new Vector3(world.x, 0, world.y);
-                
-                // Find ground height
-                RaycastHit hit;
-                if (Physics.Raycast(new Vector3(world.x, 1000, world.y), Vector3.down, out hit, 2000f))
-                {
-                    teleportPos.y = hit.point.y + 1f;
-                }
-                else
-                {
-                    teleportPos.y = TerrainMeta.HeightMap.GetHeight(teleportPos) + 1f;
-                }
-                
-                player.Teleport(teleportPos);
-                player.ChatMessage($"<color=green>Teleported to: X={world.x:F1}, Z={world.y:F1}</color>");
-            }
-            else
-            {
-                // Event selection mode
-                liveMapSingleMarker = world;
-                player.ChatMessage($"<color=green>Location selected: X={world.x:F1}, Z={world.y:F1}</color>");
-            }
+            liveMapSingleMarker = world;
+
+            player.ChatMessage($"<color=green>Location selected: X={world.x:F1}, Z={world.y:F1}</color>");
             
             NextTick(() => UpdateLiveMapDotsAndMarkers(player));
         }
@@ -753,15 +946,8 @@ namespace Oxide.Plugins
         [ConsoleCommand("sm.livemap.close")]
         void CmdLiveMapClose(ConsoleSystem.Arg arg)
         {
-            if (arg.Args == null || arg.Args.Length == 0) return;
-            if (!ulong.TryParse(arg.Args[0], out ulong id)) return;
-
-            BasePlayer player = BasePlayer.FindByID(id);
-            if (player != null) 
-            {
-                CloseLiveMapView(player);
-                liveMapTeleportMode = false; // Reset mode when closing
-            }
+            BasePlayer player = arg.Player();
+            if (player != null) CloseLiveMapView(player);
         }
 
         [ConsoleCommand("sm.livemap.confirm")]
@@ -849,7 +1035,7 @@ namespace Oxide.Plugins
 
             container.Add(new CuiLabel
             {
-                Text = { Text = "SERVER MANAGER v4.0.0", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                Text = { Text = "SERVER MANAGER v3.0.2 - STANDALONE", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
                 RectTransform = { AnchorMin = "0 0.95", AnchorMax = "1 1" }
             }, "ServerManagerMain");
 
@@ -878,9 +1064,7 @@ namespace Oxide.Plugins
 
             CuiHelper.AddUi(player, container);
             OpenGeneralTab(player);
-        }
-
-        void OpenGeneralTab(BasePlayer player)
+        }void OpenGeneralTab(BasePlayer player)
         {
             CuiHelper.DestroyUi(player, "ServerManagerContent");
 
@@ -1074,9 +1258,7 @@ namespace Oxide.Plugins
                 OpenGeneralTab(player);
                 player.ChatMessage($"<color=green>Crate unlock time set to {crateUnlockTime} minutes</color>");
             }
-        }
-
-        [ConsoleCommand("sm.time.set")]
+        }[ConsoleCommand("sm.time.set")]
         void CmdTimeSet(ConsoleSystem.Arg arg)
         {
             var player = arg.Player();
@@ -1166,7 +1348,558 @@ namespace Oxide.Plugins
             player.ChatMessage("<color=green>Garbage collection triggered</color>");
         }
 
-        // ===== KITS TAB =====
+        // ===== PARACHUTE ENTITY =====
+        
+        public class ParachuteEntity : MonoBehaviour
+        {
+            private DroppedItem worldItem;
+            private Rigidbody myRigidbody;
+            private BaseEntity chair;
+            private BaseMountable chairMount;
+            private BaseEntity parachute;
+            private BasePlayer player;
+            private InputState input;
+
+            public float fwdForce = 5f;
+            public float upForce = -10f;
+            private float counter = 0f;
+            private bool enabled = false;
+            public bool wantsDismount = false;
+            private bool forceDismount = false;
+
+            private void Awake()
+            {
+                worldItem = GetComponent<DroppedItem>();
+                if (worldItem == null) { OnDestroy(); return; }
+                myRigidbody = worldItem.GetComponent<Rigidbody>();
+                if (myRigidbody == null) { OnDestroy(); return; }
+
+                parachute = GameManager.server.CreateEntity("assets/prefabs/misc/parachute/parachute.prefab", new Vector3(), new Quaternion(), false);
+                parachute.enableSaving = true;
+                parachute.SetParent(worldItem, 0, false, false);
+                parachute?.Spawn();
+                parachute.transform.localEulerAngles += new Vector3(0, 0, 0);
+                parachute.transform.localPosition += new Vector3(0f, 1.3f, -0.1f);
+
+                string chairprefab = "assets/bundled/prefabs/static/chair.invisible.static.prefab";
+                chair = GameManager.server.CreateEntity(chairprefab, new Vector3(), new Quaternion(), false);
+                chair.enableSaving = true;
+                chair.GetComponent<BaseMountable>().isMobile = true;
+                chair.Spawn();
+
+                chair.transform.localEulerAngles += new Vector3(0, 0, 0);
+                chair.transform.localPosition += new Vector3(0f, -1f, 0f);
+                chair.SetParent(parachute, 0, false, false);
+                chair.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
+                chair.UpdateNetworkGroup();
+
+                chairMount = chair.GetComponent<BaseMountable>();
+                if (chairMount == null) { OnDestroy(); return; }
+
+                enabled = false;
+            }
+
+            private void OnCollisionEnter(Collision collision)
+            {
+                if (!enabled) return;
+                if ((1 << (collision.gameObject.layer & 31) & 1084293393) > 0)
+                {
+                    this.OnDestroy();
+                }
+            }
+
+            public void SetPlayer(BasePlayer player)
+            {
+                this.player = player;
+                chair.GetComponent<BaseMountable>().MountPlayer(player);
+                enabled = true;
+                player?.SendConsoleCommand("gametip.showgametip", "Use WASD to control your descent. Press JUMP twice to cut parachute!");
+                Interface.Oxide.GetLibrary<Core.Libraries.Timer>().Once(12f, () => player?.SendConsoleCommand("gametip.hidegametip"));
+            }
+
+            public void SetInput(InputState input)
+            {
+                this.input = input;
+            }
+
+            private void FixedUpdate()
+            {
+                if (!enabled) return;
+                if (chair == null || player == null || forceDismount || !chairMount._mounted) { OnDestroy(); return; }
+
+                var currentPlayerPos = player.transform.position;
+                var currentPos = myRigidbody.transform.position;
+                var getRotAngles = myRigidbody.transform.rotation.eulerAngles;
+
+                #region Collision Checks
+
+                if (player != null && player.IsHeadUnderwater()) { this.OnDestroy(); return; }
+
+                #endregion
+
+                #region Check Player Input
+
+                if (input.WasJustPressed(BUTTON.JUMP))
+                {
+                    if (wantsDismount) { forceDismount = true; OnDestroy(); return; };
+                    player?.SendConsoleCommand("gametip.showgametip", "SAFETY RELEASED! Press JUMP again to cut parachute and freefall!");
+                    Interface.Oxide.GetLibrary<Core.Libraries.Timer>().Once(8f, () => player?.SendConsoleCommand("gametip.hidegametip"));
+                    wantsDismount = true;
+                }
+
+                // Check player input and adjust rotation accordingly
+                if (input.IsDown(BUTTON.FORWARD) || input.IsDown(BUTTON.BACKWARD))
+                {
+                    float direction = input.IsDown(BUTTON.FORWARD) ? 1f : -1f;
+                    float newRotation = getRotAngles.x + direction;
+                    bool isValidRotation = newRotation > 320f || newRotation < 40f;
+                    float adjustment = isValidRotation ? newRotation : worldItem.transform.rotation.eulerAngles.x;
+                    myRigidbody.transform.rotation = Quaternion.Euler(adjustment, myRigidbody.transform.rotation.eulerAngles.y, myRigidbody.transform.rotation.eulerAngles.z);
+                }
+
+                if (input.IsDown(BUTTON.RIGHT) || input.IsDown(BUTTON.LEFT))
+                {
+                    float direction = input.IsDown(BUTTON.RIGHT) ? 1f : -1f;
+                    myRigidbody.AddTorque(Vector3.up * direction, ForceMode.Acceleration);
+                }
+
+                #endregion
+
+                #region Rotation Angle Checks
+
+                float deltaForce = (1f + fwdForce / 10f) * Time.deltaTime;
+
+                // If facing down, speed up and less lift, else if back slow down and more lift if fast enough
+                if (getRotAngles.x == 0f)
+                {
+                    //...
+                }
+                // if parachute is angled down in front, increase fwdForce and reduce upForce
+                else if (getRotAngles.x > 0f && getRotAngles.x < 180f)
+                {
+                    fwdForce = Mathf.MoveTowards(fwdForce, 15f, deltaForce);
+                    upForce = Mathf.MoveTowards(upForce, -20f, deltaForce);
+                }
+                else if (getRotAngles.x == 180f)
+                {
+                    //...
+                }
+                // if parachute is angled back
+                else if (getRotAngles.x > 180f && getRotAngles.x <= 379f)
+                {
+                    // If leaning back and going slow, slow fwd speed and reduce lift
+                    if (fwdForce > 7f)
+                    {
+                        fwdForce = Mathf.MoveTowards(fwdForce, -1f, 2f * Time.deltaTime);
+                        upForce = Mathf.MoveTowards(upForce, 10f, 10f * Time.deltaTime);
+                    }
+                    else
+                    {
+                        fwdForce = Mathf.MoveTowards(fwdForce, -1f, 3f * Time.deltaTime);
+                        upForce = Mathf.MoveTowards(upForce, -10f, 4f * Time.deltaTime);
+                    }
+                }
+
+                #endregion
+
+                #region Apply Forces
+
+                // Apply forward force
+                myRigidbody.AddForce(this.transform.forward * fwdForce, ForceMode.Acceleration);
+
+                // Apply damping force if there is any velocity
+                if (myRigidbody.velocity.magnitude != 0f)
+                {
+                    myRigidbody.AddForce(-myRigidbody.velocity.normalized * 5f, ForceMode.Acceleration);
+                }
+
+                // Apply upward impulse if downward velocity exceeds upward force
+                if (myRigidbody.velocity.y < upForce)
+                {
+                    myRigidbody.AddForce(Vector3.up * (upForce - myRigidbody.velocity.y), ForceMode.Impulse);
+                }
+
+                #endregion
+
+                #region Rotation Resistance
+
+                //Rotation Reistance Force
+                if (myRigidbody.angularVelocity.y != 0f)
+                {
+                    myRigidbody.AddTorque(new Vector3(0f, -myRigidbody.angularVelocity.y, 0f) * 1f, ForceMode.Acceleration);
+                    myRigidbody.transform.rotation = Quaternion.Euler(myRigidbody.transform.rotation.eulerAngles.x, myRigidbody.transform.rotation.eulerAngles.y, -myRigidbody.angularVelocity.y * 50f);
+
+                }
+
+                #endregion
+
+                worldItem.transform.hasChanged = true;
+                worldItem.SendNetworkUpdateImmediate();
+                worldItem.UpdateNetworkGroup();
+
+                player.transform.hasChanged = true;
+                player.SendNetworkUpdateImmediate(false);
+                player.UpdateNetworkGroup();
+            }
+
+            public void Release()
+            {
+                enabled = false;
+                if (chair != null && chair.GetComponent<BaseMountable>().IsMounted())
+                    chair.GetComponent<BaseMountable>().DismountPlayer(player, false);
+                if (player != null && player.isMounted)
+                    player.DismountObject();
+
+                if (!chair.IsDestroyed) chair.Kill();
+                if (!parachute.IsDestroyed) parachute.Kill();
+                if (!worldItem.IsDestroyed) worldItem.Kill();
+                UnityEngine.GameObject.Destroy(this.gameObject);
+            }
+
+            public void OnDestroy()
+            {
+                player = null;
+                Release();
+                GameObject.Destroy(this);
+            }
+        }
+
+        // ===== DATA MANAGEMENT & CONFIGURATION =====
+
+        void Loaded()
+        {
+            LoadData();
+        }
+
+        void Unload()
+        {
+            SaveData();
+            
+            // Clean up all active live map timers
+            foreach (var timer in liveMapActiveTimers.Values)
+            {
+                timer?.Destroy();
+            }
+            liveMapActiveTimers.Clear();
+
+            // Clean up reputation timers
+            foreach (var timer in reputationHudTimers.Values)
+            {
+                timer?.Destroy();
+            }
+            reputationHudTimers.Clear();
+
+            foreach (var timer in safezoneTimers.Values)
+            {
+                timer?.Destroy();
+            }
+            safezoneTimers.Clear();
+
+            foreach (var timer in prophetSpawnTimers.Values)
+            {
+                timer?.Destroy();
+            }
+            prophetSpawnTimers.Clear();
+
+            // Close all UIs
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                CloseLiveMapView(player);
+                StopReputationHud(player);
+                CuiHelper.DestroyUi(player, "ProphetSpawnChoice");
+            }
+
+            // Destroy all parachutes
+            var parachutes = UnityEngine.Object.FindObjectsOfType<ParachuteEntity>();
+            foreach (var parachute in parachutes)
+            {
+                parachute?.OnDestroy();
+            }
+        }
+
+        void LoadData()
+        {
+            try
+            {
+                var data = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<string, object>>("ServerManager");
+                
+                if (data.TryGetValue("decayFactor", out var decay))
+                    float.TryParse(decay.ToString(), out decayFactor);
+                
+                if (data.TryGetValue("crateUnlockTime", out var crate))
+                    int.TryParse(crate.ToString(), out crateUnlockTime);
+                
+                if (data.TryGetValue("timeOfDay", out var time))
+                    float.TryParse(time.ToString(), out timeOfDay);
+                
+                if (data.TryGetValue("selectedEventPosition", out var pos))
+                {
+                    var posData = pos as Dictionary<string, object>;
+                    if (posData != null)
+                    {
+                        selectedEventPosition = new Vector3(
+                            Convert.ToSingle(posData["x"]),
+                            Convert.ToSingle(posData["y"]),
+                            Convert.ToSingle(posData["z"])
+                        );
+                    }
+                }
+
+                if (data.TryGetValue("customKits", out var kits))
+                {
+                    var kitsData = kits as Dictionary<string, object>;
+                    if (kitsData != null)
+                    {
+                        customKits = new Dictionary<ulong, Dictionary<string, int>>();
+                        foreach (var kvp in kitsData)
+                        {
+                            if (ulong.TryParse(kvp.Key, out ulong userId))
+                            {
+                                var kitItems = kvp.Value as Dictionary<string, object>;
+                                if (kitItems != null)
+                                {
+                                    customKits[userId] = new Dictionary<string, int>();
+                                    foreach (var item in kitItems)
+                                    {
+                                        if (int.TryParse(item.Value.ToString(), out int amount))
+                                        {
+                                            customKits[userId][item.Key] = amount;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Load reputation data
+                if (data.TryGetValue("playerReputations", out var repData))
+                {
+                    var reputations = repData as Dictionary<string, object>;
+                    if (reputations != null)
+                    {
+                        playerReputations = new Dictionary<ulong, int>();
+                        foreach (var kvp in reputations)
+                        {
+                            if (ulong.TryParse(kvp.Key, out ulong userId) && int.TryParse(kvp.Value.ToString(), out int rep))
+                            {
+                                playerReputations[userId] = rep;
+                            }
+                        }
+                    }
+                }
+
+                // Load reputation config
+                if (data.TryGetValue("repNpcKillPenalty", out var npcPenalty))
+                    int.TryParse(npcPenalty.ToString(), out repNpcKillPenalty);
+                
+                if (data.TryGetValue("repInfidelGatherMultiplier", out var infGather))
+                    float.TryParse(infGather.ToString(), out repInfidelGatherMultiplier);
+                if (data.TryGetValue("repSinnerGatherMultiplier", out var sinGather))
+                    float.TryParse(sinGather.ToString(), out repSinnerGatherMultiplier);
+                if (data.TryGetValue("repAverageGatherMultiplier", out var avgGather))
+                    float.TryParse(avgGather.ToString(), out repAverageGatherMultiplier);
+                if (data.TryGetValue("repDiscipleGatherMultiplier", out var discGather))
+                    float.TryParse(discGather.ToString(), out repDiscipleGatherMultiplier);
+                if (data.TryGetValue("repProphetGatherMultiplier", out var propGather))
+                    float.TryParse(propGather.ToString(), out repProphetGatherMultiplier);
+
+                // Load tier kits
+                if (data.TryGetValue("tierKits", out var tierKitData))
+                {
+                    var tierKitsDict = tierKitData as Dictionary<string, object>;
+                    if (tierKitsDict != null)
+                    {
+                        foreach (var kvp in tierKitsDict)
+                        {
+                            var tierName = kvp.Key;
+                            var kitData = kvp.Value as Dictionary<string, object>;
+                            if (kitData != null && tierKits.ContainsKey(tierName))
+                            {
+                                tierKits[tierName] = new Dictionary<string, int>();
+                                foreach (var item in kitData)
+                                {
+                                    if (int.TryParse(item.Value.ToString(), out int amount))
+                                    {
+                                        tierKits[tierName][item.Key] = amount;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                PrintWarning("[ServerManager] Configuration loaded successfully");
+            }
+            catch (Exception ex)
+            {
+                PrintWarning($"[ServerManager] Failed to load data: {ex.Message}");
+            }
+        }
+
+        void SaveData()
+        {
+            try
+            {
+                var data = new Dictionary<string, object>
+                {
+                    ["decayFactor"] = decayFactor,
+                    ["crateUnlockTime"] = crateUnlockTime,
+                    ["timeOfDay"] = timeOfDay,
+                    ["selectedEventPosition"] = new Dictionary<string, object>
+                    {
+                        ["x"] = selectedEventPosition.x,
+                        ["y"] = selectedEventPosition.y,
+                        ["z"] = selectedEventPosition.z
+                    },
+                    ["customKits"] = customKits.ToDictionary(
+                        kvp => kvp.Key.ToString(),
+                        kvp => kvp.Value as object
+                    ),
+                    ["playerReputations"] = playerReputations.ToDictionary(
+                        kvp => kvp.Key.ToString(),
+                        kvp => kvp.Value as object
+                    ),
+                    ["repNpcKillPenalty"] = repNpcKillPenalty,
+                    ["repInfidelGatherMultiplier"] = repInfidelGatherMultiplier,
+                    ["repSinnerGatherMultiplier"] = repSinnerGatherMultiplier,
+                    ["repAverageGatherMultiplier"] = repAverageGatherMultiplier,
+                    ["repDiscipleGatherMultiplier"] = repDiscipleGatherMultiplier,
+                    ["repProphetGatherMultiplier"] = repProphetGatherMultiplier,
+                    ["repNpcPenaltyEnabled"] = repNpcPenaltyEnabled,
+                    ["repParachuteSpawnEnabled"] = repParachuteSpawnEnabled,
+                    ["repHudDisplayEnabled"] = repHudDisplayEnabled,
+                    ["repSafeZoneHostilityEnabled"] = repSafeZoneHostilityEnabled,
+                    ["repGatherBonusEnabled"] = repGatherBonusEnabled,
+                    ["tierKits"] = tierKits.ToDictionary(
+                        kvp => kvp.Key,
+                        kvp => kvp.Value as object
+                    )
+                };
+
+                Interface.Oxide.DataFileSystem.WriteObject("ServerManager", data);
+                PrintWarning("[ServerManager] Configuration saved successfully");
+            }
+            catch (Exception ex)
+            {
+                PrintError($"[ServerManager] Failed to save data: {ex.Message}");
+            }
+        }
+
+        void Save() => SaveData();
+
+        // ===== ADMIN COMMANDS =====
+
+        [ChatCommand("smreload")]
+        void CmdReload(BasePlayer player, string command, string[] args)
+        {
+            if (!HasPerm(player))
+            {
+                player.ChatMessage("<color=red>No permission.</color>");
+                return;
+            }
+
+            SaveData();
+            LoadData();
+            player.ChatMessage("<color=green>[ServerManager] Plugin reloaded successfully!</color>");
+        }
+
+        [ChatCommand("smreset")]
+        void CmdReset(BasePlayer player, string command, string[] args)
+        {
+            if (!HasPerm(player))
+            {
+                player.ChatMessage("<color=red>No permission.</color>");
+                return;
+            }
+
+            if (args.Length > 0 && args[0] == "confirm")
+            {
+                // Reset all settings to defaults
+                decayFactor = 1f;
+                crateUnlockTime = 15;
+                timeOfDay = -1f;
+                selectedEventPosition = Vector3.zero;
+                customKits.Clear();
+                playerReputations.Clear();
+                
+                // Reset reputation config
+                repNpcKillPenalty = -5;
+                repInfidelGatherMultiplier = 0.7f;
+                repSinnerGatherMultiplier = 0.85f;
+                repAverageGatherMultiplier = 1.0f;
+                repDiscipleGatherMultiplier = 1.25f;
+                repProphetGatherMultiplier = 1.5f;
+                repNpcPenaltyEnabled = true;
+                repParachuteSpawnEnabled = true;
+                repHudDisplayEnabled = true;
+                repSafeZoneHostilityEnabled = true;
+                repGatherBonusEnabled = true;
+
+                foreach (var tier in tierKits.Keys.ToList())
+                {
+                    tierKits[tier].Clear();
+                }
+
+                SaveData();
+                player.ChatMessage("<color=green>[ServerManager] All settings reset to defaults!</color>");
+            }
+            else
+            {
+                player.ChatMessage("<color=yellow>[ServerManager] Use '/smreset confirm' to reset all settings to defaults.</color>");
+            }
+        }
+
+        [ChatCommand("smstatus")]
+        void CmdStatus(BasePlayer player, string command, string[] args)
+        {
+            if (!HasPerm(player))
+            {
+                player.ChatMessage("<color=red>No permission.</color>");
+                return;
+            }
+
+            player.ChatMessage("<color=green>=== ServerManager Status ===</color>");
+            player.ChatMessage($"<color=yellow>Decay Factor:</color> {decayFactor}");
+            player.ChatMessage($"<color=yellow>Crate Unlock:</color> {crateUnlockTime} minutes");
+            player.ChatMessage($"<color=yellow>Time Setting:</color> {(timeOfDay < 0 ? "Auto" : $"{timeOfDay}:00")}");
+            player.ChatMessage($"<color=yellow>Custom Kits:</color> {customKits.Count} players");
+            player.ChatMessage($"<color=yellow>Active Maps:</color> {liveMapActiveTimers.Count}");
+            player.ChatMessage($"<color=yellow>Reputation System:</color> Standalone ({playerReputations.Count} players)");
+            player.ChatMessage($"<color=yellow>Zone Manager:</color> {(ZoneManager?.IsLoaded == true ? "Loaded" : "Not Loaded")}");
+        }
+
+        // ===== ERROR HANDLING & CLEANUP =====
+
+        private void OnServerSave()
+        {
+            SaveData();
+        }
+
+        private void OnServerShutdown()
+        {
+            SaveData();
+            
+            // Gracefully close all live maps
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                if (player?.IsConnected == true)
+                {
+                    CloseLiveMapView(player);
+                    StopReputationHud(player);
+                }
+            }
+        }
+
+        void OnNewSave(string filename)
+        {
+            PrintWarning("[ServerManager] New save detected - resetting plugin data");
+            customKits.Clear();
+            playerReputations.Clear();
+            selectedEventPosition = Vector3.zero;
+            SaveData();
+        }
+// ===== KITS TAB =====
 
         void OpenKitsTab(BasePlayer player)
         {
@@ -1182,10 +1915,35 @@ namespace Oxide.Plugins
 
             container.Add(new CuiLabel
             {
-                Text = { Text = "CUSTOM KIT BUILDER", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                Text = { Text = "KIT MANAGEMENT SYSTEM", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
                 RectTransform = { AnchorMin = "0.1 0.9", AnchorMax = "0.9 0.95" }
             }, "ServerManagerContent");
 
+            // Tab selection for different kit types
+            string[] kitTypes = { "Custom Kit", "Infidel", "Sinner", "Average", "Disciple", "Prophet" };
+            for (int i = 0; i < kitTypes.Length; i++)
+            {
+                float xMin = i * (1f / kitTypes.Length);
+                float xMax = xMin + (1f / kitTypes.Length);
+                string kitType = kitTypes[i];
+                string command = i == 0 ? "sm.kit.selectcustom" : $"sm.kit.selecttier {kitType}";
+                
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.3 0.3 0.3 1", Command = command },
+                    RectTransform = { AnchorMin = $"{xMin} 0.82", AnchorMax = $"{xMax} 0.87" },
+                    Text = { Text = kitType, FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+            }
+
+            // Default to custom kit view
+            ShowCustomKitBuilder(container, player);
+
+            CuiHelper.AddUi(player, container);
+        }
+
+        void ShowCustomKitBuilder(CuiElementContainer container, BasePlayer player)
+        {
             if (!customKits.ContainsKey(player.userID))
                 customKits[player.userID] = new Dictionary<string, int>();
 
@@ -1194,27 +1952,27 @@ namespace Oxide.Plugins
             
             container.Add(new CuiLabel
             {
-                Text = { Text = $"Kit Items: {playerKit.Count} types ({totalItems} total)", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.8 0.8 0.8 1" },
-                RectTransform = { AnchorMin = "0.02 0.84", AnchorMax = "0.5 0.88" }
+                Text = { Text = $"CUSTOM KIT BUILDER - Items: {playerKit.Count} types ({totalItems} total)", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.8 0.8 0.8 1" },
+                RectTransform = { AnchorMin = "0.02 0.75", AnchorMax = "0.5 0.8" }
             }, "ServerManagerContent");
 
             // Display current kit items
             int itemIndex = 0;
             foreach (var kvp in playerKit.Take(12))
             {
-                float yPos = 0.78f - (itemIndex * 0.06f);
+                float yPos = 0.7f - (itemIndex * 0.045f);
                 string itemName = commonItems.ContainsKey(kvp.Key) ? commonItems[kvp.Key] : kvp.Key;
 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = $"• {itemName}: {kvp.Value}", FontSize = 10, Align = TextAnchor.MiddleLeft, Color = "1 1 1 1" },
-                    RectTransform = { AnchorMin = $"0.02 {yPos}", AnchorMax = $"0.35 {yPos + 0.05f}" }
+                    Text = { Text = $"• {itemName}: {kvp.Value}", FontSize = 9, Align = TextAnchor.MiddleLeft, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = $"0.02 {yPos}", AnchorMax = $"0.35 {yPos + 0.04f}" }
                 }, "ServerManagerContent");
 
                 container.Add(new CuiButton
                 {
                     Button = { Color = "0.8 0.2 0.2 1", Command = $"sm.kit.removeitem {kvp.Key}" },
-                    RectTransform = { AnchorMin = $"0.36 {yPos}", AnchorMax = $"0.4 {yPos + 0.05f}" },
+                    RectTransform = { AnchorMin = $"0.36 {yPos}", AnchorMax = $"0.39 {yPos + 0.04f}" },
                     Text = { Text = "×", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
                 }, "ServerManagerContent");
 
@@ -1224,7 +1982,7 @@ namespace Oxide.Plugins
             container.Add(new CuiLabel
             {
                 Text = { Text = "ADD ITEMS:", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.8 0.8 0.8 1" },
-                RectTransform = { AnchorMin = "0.45 0.84", AnchorMax = "0.95 0.88" }
+                RectTransform = { AnchorMin = "0.45 0.75", AnchorMax = "0.95 0.8" }
             }, "ServerManagerContent");
 
             // Add item buttons
@@ -1234,7 +1992,7 @@ namespace Oxide.Plugins
                 int col = buttonIndex % 6;
                 int row = buttonIndex / 6;
                 float xPos = 0.45f + (col * 0.09f);
-                float yPos = 0.78f - (row * 0.13f);
+                float yPos = 0.7f - (row * 0.13f);
 
                 container.Add(new CuiButton
                 {
@@ -1280,8 +2038,105 @@ namespace Oxide.Plugins
                 RectTransform = { AnchorMin = "0.82 0.02", AnchorMax = "0.95 0.08" },
                 Text = { Text = "Give Kit", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
             }, "ServerManagerContent");
+        }
 
-            CuiHelper.AddUi(player, container);
+        void ShowTierKitBuilder(CuiElementContainer container, BasePlayer player, string tier)
+        {
+            if (!tierKits.ContainsKey(tier))
+                tierKits[tier] = new Dictionary<string, int>();
+
+            var tierKit = tierKits[tier];
+            int totalItems = tierKit.Values.Sum();
+            Color tierColor = GetTierColor(tier);
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"{tier.ToUpper()} TIER KIT - Items: {tierKit.Count} types ({totalItems} total)", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = $"{tierColor.r} {tierColor.g} {tierColor.b} 1" },
+                RectTransform = { AnchorMin = "0.02 0.75", AnchorMax = "0.5 0.8" }
+            }, "ServerManagerContent");
+
+            // Display current tier kit items
+            int itemIndex = 0;
+            foreach (var kvp in tierKit.Take(12))
+            {
+                float yPos = 0.7f - (itemIndex * 0.045f);
+                string itemName = commonItems.ContainsKey(kvp.Key) ? commonItems[kvp.Key] : kvp.Key;
+
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"• {itemName}: {kvp.Value}", FontSize = 9, Align = TextAnchor.MiddleLeft, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = $"0.02 {yPos}", AnchorMax = $"0.35 {yPos + 0.04f}" }
+                }, "ServerManagerContent");
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.8 0.2 0.2 1", Command = $"sm.tierkit.removeitem {tier} {kvp.Key}" },
+                    RectTransform = { AnchorMin = $"0.36 {yPos}", AnchorMax = $"0.39 {yPos + 0.04f}" },
+                    Text = { Text = "×", FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+
+                itemIndex++;
+            }
+
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "ADD ITEMS TO TIER KIT:", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.8 0.8 0.8 1" },
+                RectTransform = { AnchorMin = "0.45 0.75", AnchorMax = "0.95 0.8" }
+            }, "ServerManagerContent");
+
+            // Add item buttons for tier kit
+            int buttonIndex = 0;
+            foreach (var kvp in commonItems)
+            {
+                int col = buttonIndex % 6;
+                int row = buttonIndex / 6;
+                float xPos = 0.45f + (col * 0.09f);
+                float yPos = 0.7f - (row * 0.13f);
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.4 0.6 1", Command = $"sm.tierkit.additem {tier} {kvp.Key} 1" },
+                    RectTransform = { AnchorMin = $"{xPos} {yPos + 0.06f}", AnchorMax = $"{xPos + 0.08f} {yPos + 0.11f}" },
+                    Text = { Text = kvp.Value, FontSize = 8, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.6 0.2 1", Command = $"sm.tierkit.additem {tier} {kvp.Key} 1" },
+                    RectTransform = { AnchorMin = $"{xPos} {yPos + 0.04f}", AnchorMax = $"{xPos + 0.025f} {yPos + 0.06f}" },
+                    Text = { Text = "1", FontSize = 7, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.4 0.6 0.2 1", Command = $"sm.tierkit.additem {tier} {kvp.Key} 10" },
+                    RectTransform = { AnchorMin = $"{xPos + 0.027f} {yPos + 0.04f}", AnchorMax = $"{xPos + 0.052f} {yPos + 0.06f}" },
+                    Text = { Text = "10", FontSize = 7, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.6 0.6 0.2 1", Command = $"sm.tierkit.additem {tier} {kvp.Key} 100" },
+                    RectTransform = { AnchorMin = $"{xPos + 0.055f} {yPos + 0.04f}", AnchorMax = $"{xPos + 0.08f} {yPos + 0.06f}" },
+                    Text = { Text = "100", FontSize = 7, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+
+                buttonIndex++;
+            }
+
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.7 0.2 0.2 1", Command = $"sm.tierkit.clear {tier}" },
+                RectTransform = { AnchorMin = "0.05 0.02", AnchorMax = "0.2 0.08" },
+                Text = { Text = $"Clear {tier} Kit", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, "ServerManagerContent");
+
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.2 0.7 0.2 1", Command = $"sm.tierkit.testgive {tier}" },
+                RectTransform = { AnchorMin = "0.75 0.02", AnchorMax = "0.95 0.08" },
+                Text = { Text = $"Test Give {tier} Kit", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, "ServerManagerContent");
         }
 
         void OpenSelectRecipientTab(BasePlayer player)
@@ -1333,7 +2188,60 @@ namespace Oxide.Plugins
         }
 
         // Kit Commands
-        [ConsoleCommand("sm.kit.additem")]
+        [ConsoleCommand("sm.kit.selectcustom")]
+        void CmdKitSelectCustom(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player)) return;
+            OpenKitsTab(player);
+        }
+
+        [ConsoleCommand("sm.kit.selecttier")]
+        void CmdKitSelectTier(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player) || arg.Args.Length < 1) return;
+
+            string tier = arg.Args[0];
+            if (!tierKits.ContainsKey(tier)) return;
+
+            CuiHelper.DestroyUi(player, "ServerManagerContent");
+            var container = new CuiElementContainer();
+
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.15 0.15 0.15 0.95" },
+                RectTransform = { AnchorMin = "0 0", AnchorMax = "1 0.86" },
+                CursorEnabled = true
+            }, "ServerManagerMain", "ServerManagerContent");
+
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "KIT MANAGEMENT SYSTEM", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0.1 0.9", AnchorMax = "0.9 0.95" }
+            }, "ServerManagerContent");
+
+            // Tab selection for different kit types
+            string[] kitTypes = { "Custom Kit", "Infidel", "Sinner", "Average", "Disciple", "Prophet" };
+            for (int i = 0; i < kitTypes.Length; i++)
+            {
+                float xMin = i * (1f / kitTypes.Length);
+                float xMax = xMin + (1f / kitTypes.Length);
+                string kitType = kitTypes[i];
+                string command = i == 0 ? "sm.kit.selectcustom" : $"sm.kit.selecttier {kitType}";
+                string color = kitType == tier ? "0.2 0.6 0.2 1" : "0.3 0.3 0.3 1";
+                
+                container.Add(new CuiButton
+                {
+                    Button = { Color = color, Command = command },
+                    RectTransform = { AnchorMin = $"{xMin} 0.82", AnchorMax = $"{xMax} 0.87" },
+                    Text = { Text = kitType, FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+            }
+
+            ShowTierKitBuilder(container, player, tier);
+            CuiHelper.AddUi(player, container);
+        }[ConsoleCommand("sm.kit.additem")]
         void CmdKitAddItem(ConsoleSystem.Arg arg)
         {
             var player = arg.Player();
@@ -1461,6 +2369,149 @@ namespace Oxide.Plugins
             recipient.ChatMessage("<color=green>You received a custom kit from an admin.</color>");
 
             OpenKitsTab(player);
+        }
+
+        // Tier Kit Commands
+        [ConsoleCommand("sm.tierkit.additem")]
+        void CmdTierKitAddItem(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player) || arg.Args.Length < 3) return;
+
+            string tier = arg.Args[0];
+            string itemShortname = arg.Args[1];
+            if (!int.TryParse(arg.Args[2], out int quantity) || quantity <= 0)
+            {
+                player.ChatMessage("<color=red>Invalid quantity.</color>");
+                return;
+            }
+
+            if (!tierKits.ContainsKey(tier))
+            {
+                player.ChatMessage("<color=red>Invalid tier.</color>");
+                return;
+            }
+
+            if (!commonItems.ContainsKey(itemShortname))
+            {
+                player.ChatMessage("<color=red>Invalid item.</color>");
+                return;
+            }
+
+            if (tierKits[tier].ContainsKey(itemShortname))
+                tierKits[tier][itemShortname] += quantity;
+            else
+                tierKits[tier][itemShortname] = quantity;
+
+            SaveData();
+            timer.Once(0.1f, () => {
+                var newArg = new ConsoleSystem.Arg(arg.cmd, arg.ArgsStr) { Player = player };
+                newArg.Args = new string[] { tier };
+                CmdKitSelectTier(newArg);
+            });
+            player.ChatMessage($"<color=green>Added {quantity}x {commonItems[itemShortname]} to {tier} kit</color>");
+        }
+
+        [ConsoleCommand("sm.tierkit.removeitem")]
+        void CmdTierKitRemoveItem(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player) || arg.Args.Length < 2) return;
+
+            string tier = arg.Args[0];
+            string itemShortname = arg.Args[1];
+
+            if (!tierKits.ContainsKey(tier))
+            {
+                player.ChatMessage("<color=red>Invalid tier.</color>");
+                return;
+            }
+
+            if (tierKits[tier].ContainsKey(itemShortname))
+            {
+                tierKits[tier].Remove(itemShortname);
+                SaveData();
+                player.ChatMessage($"<color=green>Removed {commonItems[itemShortname]} from {tier} kit</color>");
+            }
+
+            timer.Once(0.1f, () => {
+                var newArg = new ConsoleSystem.Arg(arg.cmd, arg.ArgsStr) { Player = player };
+                newArg.Args = new string[] { tier };
+                CmdKitSelectTier(newArg);
+            });
+        }
+
+        [ConsoleCommand("sm.tierkit.clear")]
+        void CmdTierKitClear(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player) || arg.Args.Length < 1) return;
+
+            string tier = arg.Args[0];
+            if (!tierKits.ContainsKey(tier))
+            {
+                player.ChatMessage("<color=red>Invalid tier.</color>");
+                return;
+            }
+
+            tierKits[tier].Clear();
+            SaveData();
+            player.ChatMessage($"<color=green>{tier} kit cleared.</color>");
+
+            timer.Once(0.1f, () => {
+                var newArg = new ConsoleSystem.Arg(arg.cmd, arg.ArgsStr) { Player = player };
+                newArg.Args = new string[] { tier };
+                CmdKitSelectTier(newArg);
+            });
+        }
+
+        [ConsoleCommand("sm.tierkit.testgive")]
+        void CmdTierKitTestGive(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player) || arg.Args.Length < 1) return;
+
+            string tier = arg.Args[0];
+            if (!tierKits.ContainsKey(tier))
+            {player.ChatMessage("<color=red>Invalid tier.</color>");
+                return;
+            }
+
+            var kit = tierKits[tier];
+            if (kit.Count == 0)
+            {
+                player.ChatMessage($"<color=red>{tier} kit is empty</color>");
+                return;
+            }
+
+            int failedAdds = 0;
+            int totalItems = 0;
+
+            foreach (var kvp in kit)
+            {
+                ItemDefinition def = ItemManager.FindItemDefinition(kvp.Key);
+                if (def == null)
+                {
+                    player.ChatMessage($"<color=red>Unknown item: {kvp.Key}</color>");
+                    continue;
+                }
+
+                var item = ItemManager.Create(def, kvp.Value);
+                if (item == null || !player.inventory.GiveItem(item))
+                {
+                    failedAdds++;
+                    item?.Remove();
+                }
+                else
+                {
+                    totalItems += kvp.Value;
+                }
+            }
+
+            if (failedAdds > 0)
+                player.ChatMessage($"<color=red>Could not add {failedAdds} item types (inventory full?)</color>");
+
+            player.ChatMessage($"<color=green>Received {tier} tier kit ({totalItems} items) for testing.</color>");
         }
 
         // ===== EVENTS TAB =====
@@ -1598,7 +2649,6 @@ namespace Oxide.Plugins
                 liveMapSingleMarker = new Vector2(selectedEventPosition.x, selectedEventPosition.z);
             }
 
-            liveMapTeleportMode = false; // Ensure we're in event mode
             CreateLiveMapUI(player, mapPath);
             
             NextTick(() => UpdateLiveMapDotsAndMarkers(player));
@@ -1757,7 +2807,9 @@ namespace Oxide.Plugins
                 string playerName = p.displayName.Length > 25 ? p.displayName.Substring(0, 25) + "..." : p.displayName;
                 
                 int reputation = GetPlayerReputation(p);
-                string repColor = reputation >= 75 ? "0.2 1 0.2 1" : reputation >= 50 ? "1 1 0.2 1" : reputation >= 25 ? "1 0.6 0.2 1" : "1 0.2 0.2 1";
+                string tier = GetReputationTier(reputation);
+                Color tierColor = GetTierColor(tier);
+                string repColor = $"{tierColor.r} {tierColor.g} {tierColor.b} 1";
 
                 container.Add(new CuiLabel
                 {
@@ -1767,7 +2819,7 @@ namespace Oxide.Plugins
 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = reputation.ToString(), FontSize = 9, Align = TextAnchor.MiddleCenter, Color = repColor },
+                    Text = { Text = $"{reputation} ({tier})", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = repColor },
                     RectTransform = { AnchorMin = $"0.4 {yMin}", AnchorMax = $"0.5 {yMax}" }
                 }, "ServerManagerContent");
 
@@ -1836,9 +2888,7 @@ namespace Oxide.Plugins
             }, "ServerManagerContent");
 
             CuiHelper.AddUi(player, container);
-        }
-
-        // Reputation Commands
+        }// Reputation Commands
         [ConsoleCommand("sm.rep.set")]
         void CmdRepSet(ConsoleSystem.Arg arg)
         {
@@ -1907,21 +2957,18 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null || !HasPerm(player)) return;
 
-            try
+            int count = 0;
+            foreach (var p in BasePlayer.activePlayerList)
             {
-                foreach (var kvp in repData.ToList())
+                if (p?.IsConnected == true)
                 {
-                    repData[kvp.Key] = config.DefaultReputation;
+                    SetPlayerReputation(p, 50);
+                    count++;
                 }
-                SaveReputationData();
-                RefreshAllPlayersHUD();
-                player.ChatMessage("<color=green>All player reputations reset to 50.</color>");
-                timer.Once(1f, () => OpenReputationTab(player));
             }
-            catch
-            {
-                player.ChatMessage("<color=red>Mass reset failed.</color>");
-            }
+
+            player.ChatMessage($"<color=green>Reset {count} player reputations to 50.</color>");
+            timer.Once(1f, () => OpenReputationTab(player));
         }
 
         [ConsoleCommand("sm.rep.refresh")]
@@ -1930,8 +2977,17 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null || !HasPerm(player)) return;
 
-            RefreshAllPlayersHUD();
-            player.ChatMessage("<color=green>All player HUDs refreshed.</color>");
+            int count = 0;
+            foreach (var p in BasePlayer.activePlayerList)
+            {
+                if (p?.IsConnected == true && repHudDisplayEnabled)
+                {
+                    UpdateReputationHud(p);
+                    count++;
+                }
+            }
+
+            player.ChatMessage($"<color=green>Refreshed {count} player HUDs.</color>");
         }
 
         [ConsoleCommand("sm.rep.stats")]
@@ -1940,14 +2996,29 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null || !HasPerm(player)) return;
 
-            var stats = GetReputationStats();
+            var stats = new Dictionary<string, int>
+            {
+                ["Infidel"] = 0,
+                ["Sinner"] = 0,
+                ["Average"] = 0,
+                ["Disciple"] = 0,
+                ["Prophet"] = 0
+            };
+
+            foreach (var p in BasePlayer.activePlayerList)
+            {
+                if (p?.IsConnected == true)
+                {
+                    string tier = GetReputationTier(GetPlayerReputation(p));
+                    stats[tier]++;
+                }
+            }
+
             player.ChatMessage("<color=green>=== Reputation Statistics ===</color>");
-            player.ChatMessage($"Total Players: <color=#ffff00>{stats["TotalPlayers"]}</color> | Online: <color=#ffff00>{stats["OnlineCount"]}</color>");
-            player.ChatMessage($"Average Reputation: <color=#ffff00>{stats["AverageReputation"]}</color>");
-            player.ChatMessage($"<color=#ff0000>{config.InfidelTierName}s:</color> {stats["InfidelCount"]} | <color=#ff8000>{config.SinnerTierName}s:</color> {stats["SinnerCount"]}");
-            player.ChatMessage($"<color=#ffff00>{config.AverageTierName}:</color> {stats["AverageCount"]} | <color=#ffffff>{config.DiscipleTierName}s:</color> {stats["DiscipleCount"]} | <color=#00ff00>{config.ProphetTierName}s:</color> {stats["ProphetCount"]}");
-            if (config?.EnableParachuteSpawn == true)
-                player.ChatMessage($"Aerial Spawn Eligible: <color=#00ffff>{stats["ParachuteEligible"]}</color> players ✈");
+            foreach (var kvp in stats)
+            {
+                player.ChatMessage($"<color=yellow>{kvp.Key}:</color> {kvp.Value} players");
+            }
         }
 
         // ===== REPUTATION CONFIG TAB =====
@@ -1970,42 +3041,90 @@ namespace Oxide.Plugins
                 RectTransform = { AnchorMin = "0.1 0.9", AnchorMax = "0.9 0.95" }
             }, "ServerManagerContent");
 
+            // NPC Kill Penalty Section
             container.Add(new CuiLabel
             {
-                Text = { Text = "REPUTATION SYSTEM SETTINGS", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
+                Text = { Text = "NPC KILL PENALTY SETTINGS", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
+                RectTransform = { AnchorMin = "0.05 0.8", AnchorMax = "0.95 0.85" }
+            }, "ServerManagerContent");
+
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"NPC Kill Penalty: {repNpcKillPenalty}", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0.05 0.74", AnchorMax = "0.3 0.79" }
+            }, "ServerManagerContent");
+
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.6 0.2 0.2 1", Command = "sm.repconfig.npcpenalty -1" },
+                RectTransform = { AnchorMin = "0.32 0.74", AnchorMax = "0.37 0.79" },
+                Text = { Text = "-1", FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, "ServerManagerContent");
+
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.2 0.6 0.2 1", Command = "sm.repconfig.npcpenalty 1" },
+                RectTransform = { AnchorMin = "0.39 0.74", AnchorMax = "0.44 0.79" },
+                Text = { Text = "+1", FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+            }, "ServerManagerContent");
+
+            // Gather Bonus Section
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "GATHER BONUS MULTIPLIERS", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
                 RectTransform = { AnchorMin = "0.05 0.65", AnchorMax = "0.95 0.7" }
             }, "ServerManagerContent");
+
+            string[] tiers = { "Infidel", "Sinner", "Average", "Disciple", "Prophet" };
+            float[] multipliers = { repInfidelGatherMultiplier, repSinnerGatherMultiplier, repAverageGatherMultiplier, repDiscipleGatherMultiplier, repProphetGatherMultiplier };
+
+            for (int i = 0; i < tiers.Length; i++)
+            {
+                float yPos = 0.59f - (i * 0.07f);
+                Color tierColor = GetTierColor(tiers[i]);
+                string colorStr = $"{tierColor.r} {tierColor.g} {tierColor.b} 1";
+
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"{tiers[i]}: {multipliers[i]:F1}x", FontSize = 11, Align = TextAnchor.MiddleLeft, Color = colorStr },
+                    RectTransform = { AnchorMin = $"0.05 {yPos}", AnchorMax = $"0.25 {yPos + 0.05f}" }
+                }, "ServerManagerContent");
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.6 0.2 0.2 1", Command = $"sm.repconfig.gather {i} -0.1" },
+                    RectTransform = { AnchorMin = $"0.27 {yPos}", AnchorMax = $"0.32 {yPos + 0.05f}" },
+                    Text = { Text = "-0.1", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.6 0.2 1", Command = $"sm.repconfig.gather {i} 0.1" },
+                    RectTransform = { AnchorMin = $"0.34 {yPos}", AnchorMax = $"0.39 {yPos + 0.05f}" },
+                    Text = { Text = "+0.1", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
+                }, "ServerManagerContent");
+            }
 
             // Feature Toggles Section
             container.Add(new CuiLabel
             {
                 Text = { Text = "FEATURE TOGGLES", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
-                RectTransform = { AnchorMin = "0.05 0.55", AnchorMax = "0.95 0.6" }
+                RectTransform = { AnchorMin = "0.5 0.65", AnchorMax = "0.95 0.7" }
             }, "ServerManagerContent");
 
-            string[] features = { "NPC Kill Penalty", "Parachute Spawn", "HUD Display", "Safe Zone Block", "Gather Bonus" };
-            bool[] featureStates = { 
-                config.NPCKillPenalty.Enabled, 
-                config.EnableParachuteSpawn, 
-                config.EnableHUD, 
-                config.EnableSafeZoneBlocking, 
-                config.EnableGatherBonus 
-            };
+            string[] features = { "NPC Kill Penalty", "Parachute Spawn", "HUD Display", "Safe Zone Hostility", "Gather Bonus" };
+            bool[] featureStates = { repNpcPenaltyEnabled, repParachuteSpawnEnabled, repHudDisplayEnabled, repSafeZoneHostilityEnabled, repGatherBonusEnabled };
 
             for (int i = 0; i < features.Length; i++)
             {
-                int col = i % 3;
-                int row = i / 3;
-                float xPos = 0.05f + (col * 0.3f);
-                float yPos = 0.48f - (row * 0.06f);
-                
+                float yPos = 0.59f - (i * 0.07f);
                 string color = featureStates[i] ? "0.2 0.8 0.2 1" : "0.8 0.2 0.2 1";
                 string status = featureStates[i] ? "ON" : "OFF";
 
                 container.Add(new CuiButton
                 {
                     Button = { Color = color, Command = $"sm.repconfig.toggle {i}" },
-                    RectTransform = { AnchorMin = $"{xPos} {yPos}", AnchorMax = $"{xPos + 0.28f} {yPos + 0.05f}" },
+                    RectTransform = { AnchorMin = $"0.5 {yPos}", AnchorMax = $"0.9 {yPos + 0.05f}" },
                     Text = { Text = $"{features[i]}: {status}", FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
                 }, "ServerManagerContent");
             }
@@ -2014,21 +3133,21 @@ namespace Oxide.Plugins
             container.Add(new CuiButton
             {
                 Button = { Color = "0.2 0.8 0.2 1", Command = "sm.repconfig.apply" },
-                RectTransform = { AnchorMin = "0.1 0.32", AnchorMax = "0.3 0.38" },
+                RectTransform = { AnchorMin = "0.1 0.15", AnchorMax = "0.3 0.21" },
                 Text = { Text = "Apply Changes", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
             }, "ServerManagerContent");
 
             container.Add(new CuiButton
             {
                 Button = { Color = "0.8 0.6 0.2 1", Command = "sm.repconfig.reset" },
-                RectTransform = { AnchorMin = "0.4 0.32", AnchorMax = "0.6 0.38" },
+                RectTransform = { AnchorMin = "0.4 0.15", AnchorMax = "0.6 0.21" },
                 Text = { Text = "Reset to Defaults", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
             }, "ServerManagerContent");
 
             container.Add(new CuiButton
             {
                 Button = { Color = "0.6 0.6 0.6 1", Command = "sm.repconfig.reload" },
-                RectTransform = { AnchorMin = "0.7 0.32", AnchorMax = "0.9 0.38" },
+                RectTransform = { AnchorMin = "0.7 0.15", AnchorMax = "0.9 0.21" },
                 Text = { Text = "Reload Config", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
             }, "ServerManagerContent");
 
@@ -2036,60 +3155,108 @@ namespace Oxide.Plugins
         }
 
         // Reputation Config Commands
+        [ConsoleCommand("sm.repconfig.npcpenalty")]
+        void CmdRepConfigNpcPenalty(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player) || arg.Args.Length < 1) return;
+
+            if (int.TryParse(arg.Args[0], out int change))
+            {
+                repNpcKillPenalty = Mathf.Clamp(repNpcKillPenalty + change, -20, 0);
+                SaveData();
+                OpenReputationConfigTab(player);
+                player.ChatMessage($"<color=green>NPC kill penalty set to {repNpcKillPenalty}</color>");
+            }
+        }
+
+        [ConsoleCommand("sm.repconfig.gather")]
+        void CmdRepConfigGather(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !HasPerm(player) || arg.Args.Length < 2) return;
+
+            if (int.TryParse(arg.Args[0], out int tierIndex) && float.TryParse(arg.Args[1], out float change))
+            {
+                float[] multipliers = { repInfidelGatherMultiplier, repSinnerGatherMultiplier, repAverageGatherMultiplier, repDiscipleGatherMultiplier, repProphetGatherMultiplier };
+                
+                if (tierIndex >= 0 && tierIndex < multipliers.Length)
+                {
+                    multipliers[tierIndex] = Mathf.Clamp(multipliers[tierIndex] + change, 0.1f, 5.0f);
+                    
+                    repInfidelGatherMultiplier = multipliers[0];
+                    repSinnerGatherMultiplier = multipliers[1];
+                    repAverageGatherMultiplier = multipliers[2];
+                    repDiscipleGatherMultiplier = multipliers[3];
+                    repProphetGatherMultiplier = multipliers[4];
+                    
+                    SaveData();
+                    OpenReputationConfigTab(player);
+                    
+                    string[] tierNames = { "Infidel", "Sinner", "Average", "Disciple", "Prophet" };
+                    player.ChatMessage($"<color=green>{tierNames[tierIndex]} gather multiplier set to {multipliers[tierIndex]:F1}x</color>");
+                }
+            }
+        }
+
         [ConsoleCommand("sm.repconfig.toggle")]
         void CmdRepConfigToggle(ConsoleSystem.Arg arg)
         {
             var player = arg.Player();
             if (player == null || !HasPerm(player) || arg.Args.Length < 1) return;
 
-            if (!int.TryParse(arg.Args[0], out int featureIndex)) return;
-
-            try
+            if (int.TryParse(arg.Args[0], out int featureIndex))
             {
+                string featureName = "";
+                bool newState = false;
+                
                 switch (featureIndex)
                 {
                     case 0: // NPC Kill Penalty
-                        config.NPCKillPenalty.Enabled = !config.NPCKillPenalty.Enabled;
-                        player.ChatMessage($"<color=green>NPC Kill Penalty: {(config.NPCKillPenalty.Enabled ? "ON" : "OFF")}</color>");
+                        repNpcPenaltyEnabled = !repNpcPenaltyEnabled;
+                        featureName = "NPC Kill Penalty";
+                        newState = repNpcPenaltyEnabled;
                         break;
                     case 1: // Parachute Spawn
-                        config.EnableParachuteSpawn = !config.EnableParachuteSpawn;
-                        player.ChatMessage($"<color=green>Parachute Spawn: {(config.EnableParachuteSpawn ? "ON" : "OFF")}</color>");
+                        repParachuteSpawnEnabled = !repParachuteSpawnEnabled;
+                        featureName = "Parachute Spawn";
+                        newState = repParachuteSpawnEnabled;
                         break;
                     case 2: // HUD Display
-                        config.EnableHUD = !config.EnableHUD;
-                        if (!config.EnableHUD)
+                        repHudDisplayEnabled = !repHudDisplayEnabled;
+                        featureName = "HUD Display";
+                        newState = repHudDisplayEnabled;
+                        
+                        // Update all player HUDs
+                        foreach (var p in BasePlayer.activePlayerList)
                         {
-                            foreach (var p in BasePlayer.activePlayerList)
-                                SafeExecute(() => DestroyHUD(p));
+                            if (p?.IsConnected == true)
+                            {
+                                if (newState)
+                                    StartReputationHud(p);
+                                else
+                                    StopReputationHud(p);
+                            }
                         }
-                        else
-                        {
-                            foreach (var p in BasePlayer.activePlayerList)
-                                SafeExecute(() => timer.Once(0.1f, () => SafeExecute(() => CreateOrUpdateHUD(p))));
-                        }
-                        player.ChatMessage($"<color=green>HUD Display: {(config.EnableHUD ? "ON" : "OFF")}</color>");
                         break;
-                    case 3: // Safe Zone Blocking
-                        config.EnableSafeZoneBlocking = !config.EnableSafeZoneBlocking;
-                        player.ChatMessage($"<color=green>Safe Zone Blocking: {(config.EnableSafeZoneBlocking ? "ON" : "OFF")}</color>");
+                    case 3: // Safe Zone Hostility
+                        repSafeZoneHostilityEnabled = !repSafeZoneHostilityEnabled;
+                        featureName = "Safe Zone Hostility";
+                        newState = repSafeZoneHostilityEnabled;
                         break;
                     case 4: // Gather Bonus
-                        config.EnableGatherBonus = !config.EnableGatherBonus;
-                        player.ChatMessage($"<color=green>Gather Bonus: {(config.EnableGatherBonus ? "ON" : "OFF")}</color>");
+                        repGatherBonusEnabled = !repGatherBonusEnabled;
+                        featureName = "Gather Bonus";
+                        newState = repGatherBonusEnabled;
                         break;
                     default:
-                        player.ChatMessage("<color=yellow>Unknown feature index</color>");
-                        break;
+                        player.ChatMessage("<color=red>Invalid feature index</color>");
+                        return;
                 }
-
-                Config.WriteObject(config, true);
+                
+                SaveData();
                 OpenReputationConfigTab(player);
-            }
-            catch (Exception ex)
-            {
-                player.ChatMessage("<color=red>Error toggling feature.</color>");
-                PrintError($"Feature toggle error: {ex.Message}");
+                player.ChatMessage($"<color=green>{featureName}: {(newState ? "ENABLED" : "DISABLED")}</color>");
             }
         }
 
@@ -2099,8 +3266,8 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null || !HasPerm(player)) return;
 
-            Config.WriteObject(config, true);
-            player.ChatMessage("<color=green>Configuration applied successfully!</color>");
+            SaveData();
+            player.ChatMessage("<color=green>Reputation configuration applied and saved!</color>");
         }
 
         [ConsoleCommand("sm.repconfig.reset")]
@@ -2109,9 +3276,21 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null || !HasPerm(player)) return;
 
-            LoadDefaultConfig();
-            player.ChatMessage("<color=green>Configuration reset to defaults</color>");
+            repNpcKillPenalty = -5;
+            repInfidelGatherMultiplier = 0.7f;
+            repSinnerGatherMultiplier = 0.85f;
+            repAverageGatherMultiplier = 1.0f;
+            repDiscipleGatherMultiplier = 1.25f;
+            repProphetGatherMultiplier = 1.5f;
+            repNpcPenaltyEnabled = true;
+            repParachuteSpawnEnabled = true;
+            repHudDisplayEnabled = true;
+            repSafeZoneHostilityEnabled = true;
+            repGatherBonusEnabled = true;
+
+            SaveData();
             OpenReputationConfigTab(player);
+            player.ChatMessage("<color=green>Configuration reset to defaults</color>");
         }
 
         [ConsoleCommand("sm.repconfig.reload")]
@@ -2120,9 +3299,9 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null || !HasPerm(player)) return;
 
-            LoadConfig();
-            player.ChatMessage("<color=green>Configuration reloaded</color>");
+            LoadData();
             OpenReputationConfigTab(player);
+            player.ChatMessage("<color=green>Configuration reloaded</color>");
         }
 
         // ===== LIVE MAP TAB =====
@@ -2260,7 +3439,6 @@ namespace Oxide.Plugins
                 return;
             }
 
-            liveMapTeleportMode = false; // Reset to default mode
             CreateLiveMapUI(player, mapPath);
             
             NextTick(() => UpdateLiveMapDotsAndMarkers(player));
@@ -2307,605 +3485,13 @@ namespace Oxide.Plugins
             OpenLiveMapTab(player);
         }
 
-        // ===== REPUTATION SYSTEM CORE =====
-
-        private void CheckAllPlayersForPunishments()
+        // ===== FINAL CLEANUP AND COMPLETION =====
+        
+        private static void DestroyAll<T>()
         {
-            if (!config.EnableSafeZoneBlocking && !config.EnableContinuousHungerThirstPenalty) return;
-            
-            foreach (var player in BasePlayer.activePlayerList.ToList())
-            {
-                SafeExecute(() => {
-                    if (!IsValidPlayer(player) || player.IsDead()) return;
-                    
-                    EnsureRep(player.userID);
-                    
-                    if (config.EnableSafeZoneBlocking && repData[player.userID] <= config.SafeZoneBlockingMaxRep)
-                        CheckSafeZoneBlocking(player);
-                    
-                    if (config.EnableContinuousHungerThirstPenalty && repData[player.userID] <= config.HungerThirstPenaltyMaxRep)
-                        ApplyHungerThirstPenalty(player);
-                });
-            }
-        }
-
-        private void CheckSafeZoneBlocking(BasePlayer player)
-        {
-            if (!config.SafeZonePushForce.Enabled) return;
-            
-            try
-            {
-                bool inSafeZone = player.InSafeZone();
-                
-                if (inSafeZone)
-                {
-                    // Calculate push direction away from safe zone center
-                    Vector3 pushDirection = -player.transform.forward;
-                    if (pushDirection.magnitude < 0.1f)
-                        pushDirection = Vector3.forward;
-                    
-                    // Teleport player away from safe zone safely
-                    Vector3 teleportDirection = pushDirection;
-                    Vector3 safePosition = player.transform.position;
-
-                    // Try multiple distances to find safe ground
-                    for (float distance = 5f; distance <= 20f; distance += 2f)
-                    {
-                        Vector3 testPosition = player.transform.position + teleportDirection * distance;
-                        
-                        // Check if there's ground below this position
-                        RaycastHit hit;
-                        if (Physics.Raycast(testPosition + Vector3.up * 10f, Vector3.down, out hit, 20f))
-                        {
-                            safePosition = hit.point + Vector3.up * 1f;
-                            break;
-                        }
-                    }
-
-                    player.Teleport(safePosition);
-                    
-                    // Show warning message occasionally
-                    if (config.SafeZoneMessageFrequency.Enabled && 
-                        UnityEngine.Random.Range(0f, 1f) < config.SafeZoneMessageFrequency.Value)
-                    {
-                        SendReply(player, config.SafeZoneBlockMessage);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                PrintError($"CheckSafeZoneBlocking error for {player?.displayName}: {ex.Message}");
-            }
-        }
-
-        private void ApplyHungerThirstPenalty(BasePlayer player)
-        {
-            if (!config.HungerDrainMultiplier.Enabled && !config.ThirstDrainMultiplier.Enabled) return;
-            
-            try
-            {
-                if (player.metabolism == null) return;
-                
-                bool messageShown = false;
-                
-                if (config.HungerDrainMultiplier.Enabled && player.metabolism.calories != null)
-                {
-                    float currentHunger = player.metabolism.calories.value;
-                    float drainAmount = (100f / 100f) * config.HungerThirstCheckInterval.Value * (config.HungerDrainMultiplier.Value - 1f);
-                    player.metabolism.calories.value = Mathf.Max(0, currentHunger - drainAmount);
-                }
-                
-                if (config.ThirstDrainMultiplier.Enabled && player.metabolism.hydration != null)
-                {
-                    float currentThirst = player.metabolism.hydration.value;
-                    float drainAmount = (100f / 3600f) * config.HungerThirstCheckInterval.Value * (config.ThirstDrainMultiplier.Value - 1f);
-                    player.metabolism.hydration.value = Mathf.Max(0, currentThirst - drainAmount);
-                }
-                
-                if (!messageShown && config.HungerThirstMessageFrequency.Enabled && 
-                    UnityEngine.Random.Range(0f, 1f) < config.HungerThirstMessageFrequency.Value)
-                {
-                    SendReply(player, config.HungerThirstPenaltyMessage);
-                }
-            }
-            catch (Exception ex)
-            {
-                PrintError($"ApplyHungerThirstPenalty error for {player?.displayName}: {ex.Message}");
-            }
-        }
-
-        private void CreateOrUpdateHUD(BasePlayer player)
-        {
-            if (!IsValidPlayer(player) || !config.EnableHUD) return;
-            
-            DestroyHUD(player);
-            
-            var container = new CuiElementContainer();
-            int reputation = GetPlayerReputation(player);
-            string tier = GetTierName(reputation);
-            string tierColor = GetTierColor(reputation);
-            
-            container.Add(new CuiPanel
-            {
-                Image = { Color = "0.1 0.1 0.1 0.7" },
-                RectTransform = { AnchorMin = "0.83 0.94", AnchorMax = "0.99 0.99" },
-                CursorEnabled = false
-            }, "Hud", "ReputationHUD");
-            
-            container.Add(new CuiLabel
-            {
-                Text = { Text = $"<color={tierColor}>{tier}</color> [{reputation}]", 
-                        FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
-                RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
-            }, "ReputationHUD");
-            
-            CuiHelper.AddUi(player, container);
-        }
-
-        private void DestroyHUD(BasePlayer player)
-        {
-            if (player == null) return;
-            CuiHelper.DestroyUi(player, "ReputationHUD");
-        }
-
-        private void RefreshAllPlayersHUD()
-        {
-            foreach (var player in BasePlayer.activePlayerList.ToList())
-            {
-                SafeExecute(() => {
-                    if (IsValidPlayer(player) && !player.IsSleeping())
-                        CreateOrUpdateHUD(player);
-                });
-            }
-        }
-
-        private void AwardHourlyReputation()
-        {
-            foreach (var kvp in repData.ToList())
-            {
-                int currentRep = kvp.Value;
-                int repGain = 0;
-                
-                if (currentRep < config.HourlyRepGainThreshold && config.HourlyRepGainLow.Enabled)
-                    repGain = config.HourlyRepGainLow.Value;
-                else if (config.HourlyRepGainHigh.Enabled)
-                    repGain = config.HourlyRepGainHigh.Value;
-                
-                if (repGain != 0)
-                {
-                    repData[kvp.Key] = Mathf.Clamp(currentRep + repGain, config.MinReputation, config.MaxReputation);
-                    
-                    BasePlayer player = BasePlayer.FindByID(kvp.Key);
-                    if (IsValidPlayer(player))
-                    {
-                        CreateOrUpdateHUD(player);
-                        if (repGain > 0)
-                            SendReply(player, $"<color=#00ff00>You gained {repGain} reputation for playing!</color>");
-                    }
-                }
-            }
-            
-            SaveReputationData();
-        }
-
-        private Dictionary<string, int> GetReputationStats()
-        {
-            var stats = new Dictionary<string, int>
-            {
-                ["TotalPlayers"] = repData.Count,
-                ["OnlineCount"] = BasePlayer.activePlayerList.Count,
-                ["InfidelCount"] = 0,
-                ["SinnerCount"] = 0,
-                ["AverageCount"] = 0,
-                ["DiscipleCount"] = 0,
-                ["ProphetCount"] = 0,
-                ["ParachuteEligible"] = 0,
-                ["AverageReputation"] = 0
-            };
-
-            int totalRep = 0;
-            foreach (var kvp in repData)
-            {
-                totalRep += kvp.Value;
-                string tier = GetTierName(kvp.Value);
-                
-                if (tier == config.InfidelTierName) stats["InfidelCount"]++;
-                else if (tier == config.SinnerTierName) stats["SinnerCount"]++;
-                else if (tier == config.AverageTierName) stats["AverageCount"]++;
-                else if (tier == config.DiscipleTierName) stats["DiscipleCount"]++;
-                else if (tier == config.ProphetTierName) stats["ProphetCount"]++;
-                
-                if (CanUseParachute(kvp.Value)) stats["ParachuteEligible"]++;
-            }
-
-            if (repData.Count > 0)
-                stats["AverageReputation"] = totalRep / repData.Count;
-
-            return stats;
-        }
-
-        private void SaveReputationData()
-        {
-            Interface.Oxide.DataFileSystem.WriteObject("ReputationData", repData);
-        }
-
-        // ===== HOOKS =====
-
-        void OnPlayerConnected(BasePlayer player)
-        {
-            if (!IsValidPlayer(player)) return;
-            
-            EnsureRep(player.userID);
-            
-            if (config.EnableHUD)
-                timer.Once(3f, () => SafeExecute(() => { if (IsValidPlayer(player)) CreateOrUpdateHUD(player); }));
-        }
-
-        void OnPlayerDisconnected(BasePlayer player, string reason)
-        {
-            if (player == null) return;
-            
-            DestroyHUD(player);
-            CloseLiveMapView(player);
-            
-            // Clean up radiation tracking
-            if (lastRadiationTime.ContainsKey(player.userID))
-                lastRadiationTime.Remove(player.userID);
-        }
-
-        void OnPlayerRespawned(BasePlayer player)
-        {
-            if (!IsValidPlayer(player)) return;
-            
-            EnsureRep(player.userID);
-            
-            if (config.EnableHUD)
-                timer.Once(2f, () => SafeExecute(() => { if (IsValidPlayer(player)) CreateOrUpdateHUD(player); }));
-        }
-
-        void OnPlayerSpawn(BasePlayer player)
-        {
-            if (!IsValidPlayer(player) || !player.IsAlive()) return;
-            
-            EnsureRep(player.userID);
-            int reputation = repData[player.userID];
-            
-            // Handle parachute spawning
-            if (config.EnableParachuteSpawn && CanUseParachute(reputation))
-            {
-                bool shouldParachute = false;
-                
-                if (config.ParachuteForceSpawn.Enabled && config.ParachuteForceSpawn.Value)
-                {
-                    shouldParachute = true;
-                }
-                else
-                {
-                    // Check if it's a fresh spawn (not respawn bed/bag)
-                    timer.Once(0.1f, () => {
-                        if (player == null || !player.IsConnected) return;
-                        
-                        bool nearBed = false;
-                        var beds = UnityEngine.Object.FindObjectsOfType<SleepingBag>();
-                        foreach (var bed in beds)
-                        {
-                            if (bed.deployerUserID == player.userID && Vector3.Distance(player.transform.position, bed.transform.position) < 5f)
-                            {
-                                nearBed = true;
-                                break;
-                            }
-                        }
-                        
-                        if (!nearBed)
-                            shouldParachute = true;
-                        
-                        if (shouldParachute)
-                            timer.Once(0.5f, () => InitiateParachuteSpawn(player));
-                    });
-                }
-                
-                if (shouldParachute && config.ParachuteForceSpawn.Value)
-                    timer.Once(1f, () => InitiateParachuteSpawn(player));
-            }
-        }
-
-        void InitiateParachuteSpawn(BasePlayer player)
-        {
-            if (!IsValidPlayer(player) || !player.IsAlive()) return;
-            
-            // Calculate spawn position
-            Vector3 mapCenter = new Vector3(0, config.ParachuteSpawnHeight.Value, 0);
-            
-            if (config.ParachuteSpawnRadius.Enabled && config.ParachuteSpawnRadius.Value > 0)
-            {
-                float angle = UnityEngine.Random.Range(0, 360) * Mathf.Deg2Rad;
-                float distance = UnityEngine.Random.Range(0, config.ParachuteSpawnRadius.Value);
-                mapCenter.x += Mathf.Sin(angle) * distance;
-                mapCenter.z += Mathf.Cos(angle) * distance;
-            }
-            
-            // Teleport player to height
-            player.Teleport(mapCenter);
-            player.SendNetworkUpdate();
-            
-            // Give parachute
-            if (config.ParachuteAutoEquip.Enabled && config.ParachuteAutoEquip.Value)
-            {
-                timer.Once(0.5f, () => {
-                    if (!IsValidPlayer(player)) return;
-                    
-                    var parachute = ItemManager.CreateByName("parachute", 1);
-                    if (parachute != null)
-                    {
-                        player.inventory.GiveItem(parachute);
-                        
-                        // Auto-equip the parachute
-                        timer.Once(0.2f, () => {
-                            if (!IsValidPlayer(player) || parachute == null) return;
-                            
-                            var wearContainer = player.inventory.containerWear;
-                            if (wearContainer != null)
-                            {
-                                parachute.MoveToContainer(wearContainer);
-                                SendReply(player, config.ParachuteDeployMessage);
-                            }
-                        });
-                    }
-                });
-            }
-            
-            // Give starter items
-            if (config.ParachuteGiveItems.Enabled && config.ParachuteGiveItems.Value)
-            {
-                timer.Once(1f, () => {
-                    if (!IsValidPlayer(player)) return;
-                    
-                    foreach (var item in config.ParachuteStarterItems)
-                    {
-                        var itemDef = ItemManager.FindItemDefinition(item.Key);
-                        if (itemDef != null)
-                        {
-                            var newItem = ItemManager.Create(itemDef, item.Value);
-                            if (newItem != null)
-                                player.inventory.GiveItem(newItem);
-                        }
-                    }
-                    
-                    SendReply(player, config.ParachuteSurvivalKitMessage);
-                });
-            }
-            
-            // Send spawn message
-            float height = mapCenter.y;
-            SendReply(player, string.Format(config.ParachuteSpawnMessage, height));
-        }
-
-        void OnEntityDeath(BaseCombatEntity entity, HitInfo info)
-        {
-            if (entity == null || info?.InitiatorPlayer == null) return;
-            
-            BasePlayer attacker = info.InitiatorPlayer;
-            if (!IsValidPlayer(attacker)) return;
-            
-            // PvP Kill
-            BasePlayer victim = entity as BasePlayer;
-            if (victim != null && victim != attacker && victim.userID.IsSteamId())
-            {
-                if (IsPlayerInSafeZone(attacker) || IsPlayerInSafeZone(victim))
-                    return;
-                
-                int victimRep = GetPlayerReputation(victim);
-                string victimTier = GetTierName(victimRep);
-                int repChange = GetPvPRepChange(victimTier);
-                
-                if (repChange != 0)
-                {
-                    int attackerRep = GetPlayerReputation(attacker);
-                    int newRep = Mathf.Clamp(attackerRep + repChange, config.MinReputation, config.MaxReputation);
-                    SetPlayerReputation(attacker, newRep);
-                    
-                    string changeText = repChange > 0 ? $"+{repChange}" : repChange.ToString();
-                    string color = repChange > 0 ? "#00ff00" : "#ff0000";
-                    
-                    SendReply(attacker, $"<color={color}>Reputation {changeText} for killing {victimTier} {victim.displayName}</color>");
-                }
-            }
-            // NPC Kill
-            else if (entity is BaseNpc || entity is NPCPlayer)
-            {
-                if (config.NPCKillPenalty.Enabled)
-                {
-                    int currentRep = GetPlayerReputation(attacker);
-                    int newRep = Mathf.Clamp(currentRep + config.NPCKillPenalty.Value, config.MinReputation, config.MaxReputation);
-                    SetPlayerReputation(attacker, newRep);
-                    
-                    if (config.NPCKillPenalty.Value < 0)
-                        SendReply(attacker, $"<color=#ff8000>Reputation {config.NPCKillPenalty.Value} for killing NPC</color>");
-                }
-            }
-        }
-
-        object OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
-        {
-            BasePlayer player = entity as BasePlayer;
-            if (!IsValidPlayer(player) || !config.EnableGatherBonus || item == null) return null;
-            
-            int reputation = GetPlayerReputation(player);
-            float multiplier = GetGatherMultiplier(reputation);
-            
-            if (Math.Abs(multiplier - 1.0f) > 0.001f)
-            {
-                int originalAmount = item.amount;
-                item.amount = Mathf.CeilToInt(item.amount * multiplier);
-                
-                if (config.GatherBonusMessageFrequency.Enabled && 
-                    UnityEngine.Random.Range(0f, 1f) < config.GatherBonusMessageFrequency.Value)
-                {
-                    string tier = GetTierName(reputation);
-                    string color = multiplier > 1 ? "#00ff00" : "#ff8000";
-                    string change = multiplier > 1 ? "bonus" : "penalty";
-                    int percent = Mathf.RoundToInt(Math.Abs(multiplier - 1.0f) * 100);
-                    
-                    SendReply(player, $"<color={color}>{tier} gather {change}: {percent}% ({originalAmount} → {item.amount})</color>");
-                }
-            }
-            
-            return null;
-        }
-
-        object OnDispenserBonus(ResourceDispenser dispenser, BaseEntity entity, Item item)
-        {
-            return OnDispenserGather(dispenser, entity, item);
-        }
-
-        object OnCollectiblePickup(Item item, BasePlayer player)
-        {
-            if (!IsValidPlayer(player) || !config.EnableGatherBonus || item == null) return null;
-            
-            int reputation = GetPlayerReputation(player);
-            float multiplier = GetGatherMultiplier(reputation);
-            
-            if (Math.Abs(multiplier - 1.0f) > 0.001f)
-            {
-                int originalAmount = item.amount;
-                item.amount = Mathf.CeilToInt(item.amount * multiplier);
-                
-                if (config.GatherBonusMessageFrequency.Enabled && 
-                    UnityEngine.Random.Range(0f, 1f) < config.GatherBonusMessageFrequency.Value)
-                {
-                    string tier = GetTierName(reputation);
-                    string color = multiplier > 1 ? "#00ff00" : "#ff8000";
-                    string change = multiplier > 1 ? "bonus" : "penalty";
-                    int percent = Mathf.RoundToInt(Math.Abs(multiplier - 1.0f) * 100);
-                    
-                    SendReply(player, $"<color={color}>{tier} pickup {change}: {percent}% ({originalAmount} → {item.amount})</color>");
-                }
-            }
-            
-            return null;
-        }
-
-        void OnRunPlayerMetabolism(PlayerMetabolism metabolism, BaseCombatEntity ownerEntity, float delta)
-        {
-            BasePlayer player = ownerEntity as BasePlayer;
-            if (!IsValidPlayer(player)) return;
-            
-            // Handle radiation reputation changes
-            if (metabolism.radiation_level.value > 0)
-            {
-                if (!lastRadiationTime.ContainsKey(player.userID))
-                    lastRadiationTime[player.userID] = Time.time;
-                
-                // Check if player has been in radiation for 10+ seconds
-                if (Time.time - lastRadiationTime[player.userID] >= 10f)
-                {
-                    // Radiation gives positive reputation (purification through suffering)
-                    int currentRep = GetPlayerReputation(player);
-                    if (currentRep < config.MaxReputation)
-                    {
-                        SetPlayerReputation(player, currentRep + 1);
-                        SendReply(player, "<color=#00ff00>+1 reputation for enduring radiation</color>");
-                        lastRadiationTime[player.userID] = Time.time;
-                    }
-                }
-            }
-            else
-            {
-                if (lastRadiationTime.ContainsKey(player.userID))
-                    lastRadiationTime.Remove(player.userID);
-            }
-        }
-
-        // ===== UTILITY METHODS =====
-
-        protected override void LoadDefaultMessages()
-        {
-            lang.RegisterMessages(new Dictionary<string, string>
-            {
-                ["NoPermission"] = "You don't have permission to use this command.",
-                ["InvalidSyntax"] = "Invalid syntax. Usage: {0}",
-                ["PlayerNotFound"] = "Player not found.",
-                ["InvalidAmount"] = "Invalid amount specified."
-            }, this);
-        }
-
-        void Unload()
-        {
-            // Clean up all UI elements
-            foreach (var player in BasePlayer.activePlayerList)
-            {
-                CuiHelper.DestroyUi(player, "ServerManagerMain");
-                CuiHelper.DestroyUi(player, "ServerManagerContent");
-                CuiHelper.DestroyUi(player, "ReputationHUD");
-                CloseLiveMapView(player);
-            }
-
-            // Destroy timers
-            refreshTimer?.Destroy();
-            hourlyTimer?.Destroy();
-            punishmentTimer?.Destroy();
-            
-            foreach (var timer in liveMapActiveTimers.Values)
-            {
-                timer?.Destroy();
-            }
-            liveMapActiveTimers.Clear();
-
-            // Save data
-            SaveData();
-            SaveReputationData();
-        }
-
-        void SaveData()
-        {
-            var data = new Dictionary<string, object>
-            {
-                ["decayFactor"] = decayFactor,
-                ["crateUnlockTime"] = crateUnlockTime,
-                ["timeOfDay"] = timeOfDay,
-                ["customKits"] = customKits,
-                ["selectedEventPosition"] = selectedEventPosition.ToString(),
-                ["selectedGridCoordinate"] = selectedGridCoordinate
-            };
-            
-            Interface.Oxide.DataFileSystem.WriteObject("ServerManager", data);
-        }
-
-        new void LoadData()
-        {
-            try
-            {
-                var data = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<string, object>>("ServerManager");
-                if (data != null)
-                {
-                    if (data.ContainsKey("decayFactor"))
-                        decayFactor = Convert.ToSingle(data["decayFactor"]);
-                    if (data.ContainsKey("crateUnlockTime"))
-                        crateUnlockTime = Convert.ToInt32(data["crateUnlockTime"]);
-                    if (data.ContainsKey("timeOfDay"))
-                        timeOfDay = Convert.ToSingle(data["timeOfDay"]);
-                    if (data.ContainsKey("customKits"))
-                        customKits = data["customKits"] as Dictionary<ulong, Dictionary<string, int>> ?? new Dictionary<ulong, Dictionary<string, int>>();
-                    if (data.ContainsKey("selectedEventPosition") && !string.IsNullOrEmpty(data["selectedEventPosition"].ToString()))
-                    {
-                        string[] parts = data["selectedEventPosition"].ToString().Replace("(", "").Replace(")", "").Split(',');
-                        if (parts.Length == 3)
-                        {
-                            selectedEventPosition = new Vector3(
-                                float.Parse(parts[0]),
-                                float.Parse(parts[1]),
-                                float.Parse(parts[2])
-                            );
-                        }
-                    }
-                    if (data.ContainsKey("selectedGridCoordinate"))
-                        selectedGridCoordinate = data["selectedGridCoordinate"].ToString();
-                }
-            }
-            catch (Exception ex)
-            {
-                PrintError($"Error loading data: {ex.Message}");
-            }
+            var objects = UnityEngine.Object.FindObjectsOfType(typeof(T));
+            if (objects != null)
+                foreach (var gameObj in objects)
+                    UnityEngine.Object.Destroy(gameObj);
         }
     }
-}
