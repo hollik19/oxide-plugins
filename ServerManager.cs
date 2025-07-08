@@ -125,7 +125,22 @@ namespace Oxide.Plugins
                 }
                 
                 ApplyEnvironmentalSettings();
-                
+                // Safe zone damage timer
+                timer.Every(10f, () => {
+                    if (!repSafeZoneHostilityEnabled) return;
+                    
+                    foreach (var player in BasePlayer.activePlayerList)
+                    {
+                        if (player == null || !player.IsConnected) continue;
+                        
+                        int rep = GetPlayerReputation(player);
+                        if (rep <= 25 && IsPlayerInSafeZone(player))
+                        {
+                            player.Hurt(5f);
+                            player.ChatMessage("<color=red>The safe zone burns your soul...</color>");
+                        }
+                    }
+                });
                 // Initialize reputation HUDs for all online players
                 foreach (var player in BasePlayer.activePlayerList)
                 {
@@ -137,8 +152,7 @@ namespace Oxide.Plugins
                     }
                 }
             });
-        }
-
+    }
         bool HasPerm(BasePlayer player) => player != null && permission.UserHasPermission(player.UserIDString, permAdmin);
 
         bool IsPlayerInSafeZone(BasePlayer player)
@@ -422,41 +436,8 @@ namespace Oxide.Plugins
             if (player == null || !player.IsConnected) return;
             if (!repSafeZoneHostilityEnabled) return;
             
-            // Check if Infidel in safe zone
-            if (GetReputationTier(GetPlayerReputation(player)) == "Infidel" && IsPlayerInSafeZone(player))
-            {
-                if (!safezoneTimers.ContainsKey(player.userID))
-                {
-                    player.ChatMessage("<color=red>The safe zone repels infidels! You are taking damage!</color>");
-                    
-                    safezoneTimers[player.userID] = timer.Every(15f, () => {
-                        if (player?.IsConnected == true && IsPlayerInSafeZone(player) && 
-                            GetReputationTier(GetPlayerReputation(player)) == "Infidel")
-                        {
-                            player.Hurt(5f);
-                            player.ChatMessage("<color=red>The safe zone burns your soul...</color>");
-                        }
-                        else
-                        {
-                            if (safezoneTimers.ContainsKey(player.userID))
-                            {
-                                safezoneTimers[player.userID]?.Destroy();
-                                safezoneTimers.Remove(player.userID);
-                            }
-                        }
-                    });
-                }
-            }
-            else
-            {
-                if (safezoneTimers.ContainsKey(player.userID))
-                {
-                    safezoneTimers[player.userID]?.Destroy();
-                    safezoneTimers.Remove(player.userID);
-                }
-            }
-        }
-
+            
+		}
         // ===== PROPHET PARACHUTE SPAWN SYSTEM =====
 
         void ShowProphetSpawnChoice(BasePlayer player)
@@ -552,7 +533,7 @@ namespace Oxide.Plugins
             ServerMgr.Instance.StartCoroutine(AerialSpawnProcessing(player));
         }
 
-        private IEnumerator AerialSpawnProcessing(BasePlayer player)
+        IEnumerator AerialSpawnProcessing(BasePlayer player)
         {
             if (player == null) yield break;
             
@@ -565,7 +546,7 @@ namespace Oxide.Plugins
             player.ChatMessage("<color=green>Aerial spawn activated! Use WASD to control your descent.</color>");
         }
 
-        private Vector3 FindRandomAerialLocation()
+        Vector3 FindRandomAerialLocation()
         {
             float mapSize = ConVar.Server.worldsize;
             float spawnline = (mapSize / 2) - 500f;
@@ -939,8 +920,9 @@ namespace Oxide.Plugins
             liveMapSingleMarker = world;
 
             player.ChatMessage($"<color=green>Location selected: X={world.x:F1}, Z={world.y:F1}</color>");
-            
-            NextTick(() => UpdateLiveMapDotsAndMarkers(player));
+player.ChatMessage($"<color=yellow>Type '/tphere' to teleport to this location</color>");
+
+NextTick(() => UpdateLiveMapDotsAndMarkers(player));
         }
 
         [ConsoleCommand("sm.livemap.close")]
@@ -975,6 +957,28 @@ namespace Oxide.Plugins
                 player.ChatMessage("<color=red>No location selected!</color>");
             }
         }
+		[ChatCommand("tphere")]
+void CmdTeleportHere(BasePlayer player, string command, string[] args)
+{
+    if (!HasPerm(player))
+    {
+        player.ChatMessage("<color=red>You do not have permission to use this command.</color>");
+        return;
+    }
+
+    if (!liveMapSingleMarker.HasValue)
+    {
+        player.ChatMessage("<color=red>No location selected! Use the live map first.</color>");
+        return;
+    }
+
+    var marker = liveMapSingleMarker.Value;
+    float groundHeight = TerrainMeta.HeightMap.GetHeight(new Vector3(marker.x, 0, marker.y));
+    Vector3 teleportPos = new Vector3(marker.x, groundHeight + 1f, marker.y);
+    
+    player.Teleport(teleportPos);
+    player.ChatMessage($"<color=green>Teleported to X={marker.x:F1}, Z={marker.y:F1}</color>");
+}
 
         // ===== MAIN COMMAND & TAB SYSTEM =====
 
@@ -1413,7 +1417,7 @@ namespace Oxide.Plugins
                 this.player = player;
                 chair.GetComponent<BaseMountable>().MountPlayer(player);
                 enabled = true;
-                player?.SendConsoleCommand("gametip.showgametip", "Use WASD to control your descent. Press JUMP twice to cut parachute!");
+                player?.SendConsoleCommand("gametip.showgametip", "Don't use any input until parachute is fully spawned. Use WASD to control your descent. Press JUMP twice to cut parachute!");
                 Interface.Oxide.GetLibrary<Core.Libraries.Timer>().Once(12f, () => player?.SendConsoleCommand("gametip.hidegametip"));
             }
 
@@ -1477,8 +1481,8 @@ namespace Oxide.Plugins
                 // if parachute is angled down in front, increase fwdForce and reduce upForce
                 else if (getRotAngles.x > 0f && getRotAngles.x < 180f)
                 {
-                    fwdForce = Mathf.MoveTowards(fwdForce, 15f, deltaForce);
-                    upForce = Mathf.MoveTowards(upForce, -20f, deltaForce);
+                    fwdForce = Mathf.MoveTowards(fwdForce, 30f, deltaForce);
+                    upForce = Mathf.MoveTowards(upForce, -5f, deltaForce);
                 }
                 else if (getRotAngles.x == 180f)
                 {
