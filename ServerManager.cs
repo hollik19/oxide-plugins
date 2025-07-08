@@ -348,7 +348,21 @@ namespace Oxide.Plugins
         }
 
         // ===== PLAYER HOOKS =====
+void CloseLiveMapView(BasePlayer player)
+        {
+            CuiHelper.DestroyUi(player, LiveMapContainerName);
+            CuiHelper.DestroyUi(player, LiveMapDotsContainerName);
+            CuiHelper.DestroyUi(player, LiveMapMarkersContainerName);
 
+            if (liveMapActiveTimers.TryGetValue(player.userID, out Timer t))
+            {
+                t.Destroy();
+                liveMapActiveTimers.Remove(player.userID);
+            }
+            
+            liveMapLastUpdate.Remove(player.userID);
+        }
+	}
         void OnPlayerConnected(BasePlayer player)
         {
             if (player == null) return;
@@ -711,6 +725,7 @@ void CreateLiveMapClickGrid(CuiElementContainer container, BasePlayer player)
             }, LiveMapContainerName + "_MapImage");
 }
 	}
+}
         void UpdateLiveMapDotsAndMarkers(BasePlayer player)
         {
             if (player == null || !player.IsConnected) return;
@@ -796,24 +811,6 @@ void CreateLiveMapClickGrid(CuiElementContainer container, BasePlayer player)
             CuiHelper.AddUi(player, container);
             liveMapLastUpdate[player.userID] = DateTime.Now;
         }
-
-        void CloseLiveMapView(BasePlayer player)
-        {
-            if (player == null) return;
-
-            CuiHelper.DestroyUi(player, LiveMapContainerName);
-            CuiHelper.DestroyUi(player, LiveMapDotsContainerName);
-            CuiHelper.DestroyUi(player, LiveMapMarkersContainerName);
-
-            if (liveMapActiveTimers.TryGetValue(player.userID, out Timer t))
-            {
-                t?.Destroy();
-                liveMapActiveTimers.Remove(player.userID);
-            }
-            
-            liveMapLastUpdate.Remove(player.userID);
-        }
-
         void ShowTeleportConfirmation(BasePlayer player, Vector2 worldPos)
         {
             CuiElementContainer container = new CuiElementContainer();
@@ -2861,7 +2858,7 @@ void CmdLiveMapClick(ConsoleSystem.Arg arg)
                 PrintWarning($"[ServerManager] Failed to load data: {ex.Message}");
             }
         }
-
+}
         void SaveData()
         {
             try
